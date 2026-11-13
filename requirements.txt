@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+playwright
+openpyxl
+instaloader>=4.15,<5
+instagrapi==3.2.9
