@@ -1,5 +1,6 @@
 """Collect posts visible in an Instagram browser session."""
 
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
@@ -192,6 +193,7 @@ def visible_comments(page, limit, *, diagnostics=False):
             seenAnchors.add(identity);
             unreadable.delete(identity);
             result.push({
+                comment_id: permalink?.pathname.match(/\/c\/(\d+)\/?$/)?.[1] || null,
                 username, text, time: row.querySelector('time[datetime]')?.dateTime || null, likes: null
             });
         }
@@ -211,7 +213,7 @@ def collect_loaded_comments(page, network, limit):
     def capture_visible():
         occurrences = {}
         for comment in visible_comments(page, limit):
-            key = (comment['username'].casefold(), comment['text'].strip(), comment['time'])
+            key = (comment.get('comment_id'), comment['username'].casefold(), comment['text'].strip(), comment['time'])
             occurrences[key] = occurrences.get(key, 0) + 1
             visible.setdefault((*key, occurrences[key]), comment)
 
@@ -293,7 +295,9 @@ def collect_loaded_comments(page, network, limit):
     for comment in visible.values():
         for index, candidate in enumerate(unmatched):
             if (
-                candidate['username'].casefold() == comment['username'].casefold()
+                (not candidate.get('comment_id') or not comment.get('comment_id')
+                 or candidate['comment_id'] == comment['comment_id'])
+                and candidate['username'].casefold() == comment['username'].casefold()
                 and candidate['text'].strip() == comment['text'].strip()
                 and (not candidate['time'] or not comment['time'] or candidate['time'] == comment['time'])
             ):
@@ -360,7 +364,7 @@ def read_post(page, shortcode, url, config, log):
                 f'{panel["unreadable_rows"]} مورد شناسایی‌شده بدون متن قابل خواندن.'
             )
         method = 'browser_network' if network.fields or network.comments else 'browser'
-        if not comments and config.get('post_url') and network.fields.get('reported_comment_count') != 0:
+        if not comments and config.get('post_url') and not config.get('background') and network.fields.get('reported_comment_count') != 0:
             log('کامنت خودکار پیدا نشد. تا ۳۰ ثانیه روی آیکون کامنت همان پست در پنجرهٔ اینستاگرام بزنید.')
             page.bring_to_front()
             for _ in range(30):
@@ -392,10 +396,21 @@ def read_post(page, shortcode, url, config, log):
         if config['likers']:
             likers = extract_likers(page, url)[:config['max_likers']]
             check_page_access(page, network)
+        published = network.fields.get('published_at') or page.evaluate(r"""() => {
+            const metadata = document.querySelector('meta[property="article:published_time"], meta[itemprop="datePublished"]');
+            if (metadata?.content) return metadata.content;
+            const path = location.pathname.replace(/\/$/, '');
+            const link = [...document.querySelectorAll('article a[href], main a[href]')].find(a =>
+                a.origin === location.origin && a.pathname.replace(/\/$/, '') === path && a.querySelector('time[datetime]')
+            );
+            return link?.querySelector('time').dateTime || null;
+        }""")
         return {
             **network.fields,
             'post_url': url,
             'shortcode': shortcode,
+            'media_id': network.fields.get('media_id') or next(iter(network.media_ids), None),
+            'published_at': published,
             'scraped_at': datetime.now(timezone.utc).isoformat(),
             'total_likes': total_likes,
             'comments': comments,
@@ -404,6 +419,35 @@ def read_post(page, shortcode, url, config, log):
         }
     finally:
         page.remove_listener('response', network.receive)
+
+
+@contextmanager
+def open_instagram_browser(chromium, profile_dir, background, log):
+    modes = (True, False) if background else (False,)
+    for headless in modes:
+        context = chromium.launch_persistent_context(
+            str(profile_dir), channel='chromium', headless=headless, locale='en-US',
+            viewport={'width': 1366, 'height': 768}, accept_downloads=False,
+        )
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            home = page.goto(INSTAGRAM_ORIGIN + '/', wait_until='domcontentloaded', timeout=30_000)
+            if home and home.status in (403, 429):
+                raise CollectionError(f'اینستاگرام دسترسی را محدود کرد ({home.status}).')
+            if urlsplit(page.url).path.startswith(('/challenge', '/checkpoint', '/accounts/suspended')):
+                raise CollectionError('اینستاگرام تأیید حساب خواست. وضعیت حساب را در خود اینستاگرام بررسی کنید.')
+            if not is_logged_in(page):
+                if headless:
+                    log('نشست آماده نیست. پنجرهٔ ورود باز می‌شود و این اجرا با پنجرهٔ قابل مشاهده ادامه می‌یابد.')
+                    continue
+                log('در پنجرهٔ اینستاگرام وارد شوید و در صورت نیاز تأیید حساب را کامل کنید.')
+                wait_for_instagram_login(page)
+            if headless:
+                log('جمع‌آوری در پس‌زمینه با نشست ذخیره‌شده آغاز شد.')
+            yield context, page, headless
+            return
+        finally:
+            context.close()
 
 
 def collect_in_browser(config, save, log, known_posts=()):
@@ -416,25 +460,13 @@ def collect_in_browser(config, save, log, known_posts=()):
     profile_dir.mkdir(parents=True, exist_ok=True)
     try:
         with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                str(profile_dir), headless=False, locale='en-US',
-                viewport={'width': 1366, 'height': 768}, accept_downloads=False,
-            )
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                home = page.goto(INSTAGRAM_ORIGIN + '/', wait_until='domcontentloaded', timeout=30_000)
-                if home and home.status in (403, 429):
-                    raise CollectionError(f'اینستاگرام دسترسی را محدود کرد ({home.status}).')
-                if urlsplit(page.url).path.startswith(('/challenge', '/checkpoint', '/accounts/suspended')):
-                    raise CollectionError('اینستاگرام تأیید حساب خواست. وضعیت حساب را در همان پنجره بررسی کنید.')
-                if not is_logged_in(page):
-                    log('در پنجرهٔ اینستاگرام وارد شوید و در صورت نیاز تأیید حساب را کامل کنید.')
-                    wait_for_instagram_login(page)
+            with open_instagram_browser(playwright.chromium, profile_dir, config.get('background', False), log) as (context, page, background):
+                run_config = {**config, 'background': background}
                 post_page = context.new_page()
                 if config.get('post_url'):
                     shortcode, url = parse_post_url(config['post_url'])
                     log(f'نشست مرورگر آماده است. پست {shortcode} بررسی می‌شود.')
-                    row = read_post(post_page, shortcode, url, config, log)
+                    row = read_post(post_page, shortcode, url, run_config, log)
                     save({**row, 'source': shortcode, 'source_type': 'post'})
                     log(f'پست ذخیره شد. {len(row["comments"])} کامنت ثبت شد.')
                     return
@@ -456,7 +488,7 @@ def collect_in_browser(config, save, log, known_posts=()):
                         if shortcode in known_posts and not config.get('refresh_posts'):
                             skipped.add(shortcode)
                             continue
-                        row = read_post(post_page, shortcode, url, config, log)
+                        row = read_post(post_page, shortcode, url, run_config, log)
                         save({**row, 'source': name, 'source_type': kind})
                         seen.add(shortcode)
                         log(f'پست {shortcode} ذخیره شد. {len(row["comments"])} کامنت ثبت شد.')
@@ -468,8 +500,6 @@ def collect_in_browser(config, save, log, known_posts=()):
                                 raise CollectionError(
                                     'کامنت سه پست پیاپی قابل خواندن نبود. اجرا متوقف شد و پست‌های ثبت‌شده در نتایج هستند.'
                                 )
-            finally:
-                context.close()
     except Error:
         raise CollectionError('مرورگر نتوانست صفحهٔ اینستاگرام را باز یا پردازش کند.') from None
     if skipped:

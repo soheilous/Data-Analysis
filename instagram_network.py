@@ -187,6 +187,7 @@ class PostResponses:
             key = str(item.get('pk') or item.get('id') or (username, text, created))
             likes = item.get('comment_like_count', item.get('like_count'))
             self.comments.setdefault(key, {
+                'comment_id': str(item.get('pk') or item.get('id')) if item.get('pk') or item.get('id') else None,
                 'text': text, 'username': username, 'time': created,
                 'likes': likes if isinstance(likes, int) else None,
             })

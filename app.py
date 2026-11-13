@@ -1,6 +1,7 @@
 from pathlib import Path
 import sqlite3,json,threading,uuid,shutil,os,csv,io
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI,HTTPException,Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -12,6 +13,7 @@ from unicodedata import decimal
 from direct_scraper import collect_direct,CollectionError
 from openpyxl import Workbook
 import re
+from project_store import initialize_projects, now, store_post
 from browser_scraper import collect_in_browser, parse_post_url
 ROOT=Path(__file__).resolve().parent
 DATA=ROOT/'data'; DATA.mkdir(exist_ok=True)
@@ -23,8 +25,10 @@ def db():
         with c:yield c
     finally:c.close()
 with db() as c:
+    c.execute('BEGIN IMMEDIATE')
     c.execute('CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, config TEXT,status TEXT,logs TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS results(run TEXT,payload TEXT)')
+    initialize_projects(c)
     c.execute("UPDATE runs SET status='interrupted' WHERE status IN ('running', 'awaiting_code', 'awaiting_security')")
 app=FastAPI()
 @app.exception_handler(RequestValidationError)
@@ -90,6 +94,7 @@ class Config(BaseModel):
     max_posts:int=Field(default=8,ge=1,le=100)
     scrolls:int=Field(default=3,ge=1,le=30)
     refresh_posts: bool = False
+    background: bool = False
     likers:bool=False
     demo:bool=False
     sync:bool=False
@@ -146,37 +151,72 @@ def recover_instagram_login(run_id, username, loader):
     finally:
         cookies.clear()
     log(run_id, 'حساب ورود در مرورگر تأیید شد. درخواست دریافت پست‌ها با همین نشست آغاز می‌شود.')
-def save(r,row):
-    with db() as c:c.execute('INSERT INTO results VALUES (?,?)',(r,json.dumps(row,ensure_ascii=False)))
-def rows(r):
-    with db() as c:return [json.loads(x[0]) for x in c.execute('SELECT payload FROM results WHERE run=?',(r,))]
+def save(r, row):
+    with db() as c:
+        project_id = c.execute('SELECT project_id FROM runs WHERE id=?', (r,)).fetchone()[0]
+        if project_id:
+            row = store_post(c, project_id, row)
+        if row:
+            c.execute('INSERT INTO results VALUES (?,?)', (r, json.dumps(row, ensure_ascii=False)))
 
-def previously_collected_posts():
-    with db() as connection:
-        records = connection.execute('SELECT payload FROM results')
-        return {
-            post['shortcode']
-            for (payload,) in records
-            if (post := json.loads(payload)).get('shortcode')
-            and (post.get('comments') or post.get('reported_comment_count') == 0)
-        }
-def export(r,ext):
-    records=rows(r)
+def rows(r):
+    with db() as c:
+        return [json.loads(x[0]) for x in c.execute('SELECT payload FROM results WHERE run=?', (r,))]
+
+def project_rows(project_id):
+    with db() as c:
+        return [json.loads(x[0]) for x in c.execute(
+            'SELECT payload FROM project_posts WHERE project_id=? ORDER BY rowid DESC', (project_id,),
+        )]
+
+def previously_collected_posts(project_id):
+    if not project_id:
+        return set()
+    return {post['shortcode'] for post in project_rows(project_id)
+            if post.get('comments') or post.get('reported_comment_count') == 0}
+
+def export(r, ext):
+    return export_records(rows(r), DATA / (r + '.' + ext), ext)
+
+def export_filename(config, records, ext):
+    title = config.get('title') or config.get('target') or 'دیدبان'
+    title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '-', title)
+    title = re.sub(r'\s+', ' ', title).strip(' .-')[:80] or 'دیدبان'
+    date = datetime.now(ZoneInfo('Asia/Tehran')).strftime('%Y-%m-%d')
+    comments = sum(len(record.get('comments') or []) for record in records)
+    return f'{title} - {date} - {len(records)} پست - {comments} کامنت.{ext}'
+
+def export_records(records, path, ext):
+    fields = ['post_url','shortcode','media_id','owner','caption','source','source_type',
+              'published_at','first_collected_at','scraped_at','total_likes','comments','likers']
+    table = [fields]
+    for record in records:
+        table.append([
+            json.dumps(record.get(field, []), ensure_ascii=False)
+            if field in ('comments', 'likers') else record.get(field)
+            for field in fields
+        ])
     table=[['post_url','owner','caption','source','source_type','published_at','total_likes','comments','likers']]+[[x['post_url'],x.get('owner',''),x.get('caption',''),x.get('source',''),x.get('source_type',''),x.get('published_at',''),x.get('total_likes'),json.dumps(x.get('comments',[]),ensure_ascii=False),json.dumps(x.get('likers',[]),ensure_ascii=False)] for x in records]
     table=[["'"+v if isinstance(v,str) and v.startswith(('=','+','-','@')) else v for v in row] for row in table]
-    path=DATA/(r+'.'+ext)
     if ext=='csv':
         with path.open('w',encoding='utf-8-sig',newline='') as f:csv.writer(f).writerows(table)
     else:
         w=Workbook();s=w.active;s.title='پست‌ها'
         for row in table:s.append(row)
-        for name,key in [('کامنت‌ها','comments'),('لایک‌ها','likers')]:
-            sheet=w.create_sheet(name);sheet.append(['post_url','data'])
-            for record in records:
-                for item in record.get(key,[]):sheet.append([record['post_url'],json.dumps(item,ensure_ascii=False)])
+        comments = w.create_sheet('کامنت‌ها')
+        comment_fields = ['comment_id', 'username', 'text', 'time', 'likes']
+        comments.append(['post_url', 'shortcode', *comment_fields])
+        likers = w.create_sheet('لایک‌ها')
+        likers.append(['post_url', 'data'])
+        for record in records:
+            for item in record.get('comments', []):
+                values = [record['post_url'], record.get('shortcode'), *(item.get(field) for field in comment_fields)]
+                comments.append(["'" + value if isinstance(value, str) and value.startswith(('=', '+', '-', '@')) else value for value in values])
+            for item in record.get('likers', []):
+                likers.append([record['post_url'], json.dumps(item, ensure_ascii=False)])
         w.save(path)
     return path
-def worker(r,cfg,credentials=None):
+def worker(r,cfg,credentials=None,project_id=None):
     def request_code():
         return wait_for_verification(
             r, 'awaiting_code',
@@ -211,7 +251,7 @@ def worker(r,cfg,credentials=None):
         else:
             collect_in_browser(
                 cfg, lambda row: save(r, row), lambda msg: log(r, msg),
-                known_posts=previously_collected_posts() if not (cfg['refresh_posts'] or cfg['post_url']) else (),
+                known_posts=previously_collected_posts(project_id) if not (cfg['refresh_posts'] or cfg['post_url']) else (),
             )
         with db() as c:c.execute("UPDATE runs SET status='completed' WHERE id=?",(r,))
         if cfg['sync']:
@@ -242,19 +282,31 @@ def runs():
         items=[dict(x) for x in c.execute('SELECT * FROM runs ORDER BY rowid DESC')]
     for item in items:
         records=rows(item['id'])
-        item['posts_count']=len(records)
+        item['posts_count']=sum(row.get('new_post', True) for row in records)
         item['comments_count']=sum(len(x.get('comments',[])) for x in records)
     return items
 @app.post('/api/runs')
 def start(cfg:Config):
+    return start_run(cfg)
+
+def start_run(cfg, project_id=None):
     if not cfg.demo and cfg.method != 'browser' and (not cfg.login_username.strip() or not cfg.login_password.get_secret_value()):
         raise HTTPException(400,'برای روش بدون مرورگر، نام کاربری ورود و رمز را وارد کنید')
     if not lock.acquire(False):raise HTTPException(409,'یک اجرا فعال است')
     r=uuid.uuid4().hex
     try:
-        with db() as c:c.execute('INSERT INTO runs VALUES (?,?,?,?)',(r,cfg.model_dump_json(),'running',''))
+        with db() as c:
+            if project_id:
+                saved = c.execute('SELECT config FROM projects WHERE id=?', (project_id,)).fetchone()
+                if not saved:
+                    raise HTTPException(404, 'پروژه پیدا نشد.')
+                cfg = Config.model_validate_json(saved['config'])
+            c.execute(
+                'INSERT INTO runs(id,config,status,logs,project_id,started_at) VALUES (?,?,?,?,?,?)',
+                (r,cfg.model_dump_json(),'running','',project_id,now()),
+            )
         credentials={'username':cfg.login_username.strip(),'password':cfg.login_password.get_secret_value(),'code':cfg.verification_code.get_secret_value()}
-        threading.Thread(target=worker,args=(r,cfg.model_dump(),credentials),daemon=True).start()
+        threading.Thread(target=worker,args=(r,cfg.model_dump(),credentials,project_id),daemon=True).start()
     except Exception:lock.release();raise
     return {'id':r}
 
@@ -301,5 +353,93 @@ def clear_results(r:str):
 @app.get('/api/runs/{r}/export/{ext}')
 def download(r:str,ext:str):
     if ext not in ('csv','xlsx') or not re.fullmatch('[a-f0-9]{32}',r):raise HTTPException(404)
-    result(r)
-    return FileResponse(export(r,ext),filename=r+'.'+ext)
+    with db() as c:
+        run = c.execute('SELECT config FROM runs WHERE id=?', (r,)).fetchone()
+    if not run:
+        raise HTTPException(404, 'اجرا پیدا نشد')
+    records = rows(r)
+    path = export_records(records, DATA / f'{r}.{ext}', ext)
+    return FileResponse(path, filename=export_filename(json.loads(run['config']), records, ext))
+
+def get_project(project_id):
+    with db() as c:
+        row = c.execute('SELECT * FROM projects WHERE id=?', (project_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, 'پروژه پیدا نشد.')
+    return dict(row)
+
+
+@app.get('/api/projects')
+def list_projects():
+    with db() as c:
+        return [dict(row) for row in c.execute('SELECT * FROM projects ORDER BY updated_at DESC')]
+
+
+def project_config(cfg):
+    if cfg.method != 'browser' or cfg.post_url or cfg.demo:
+        raise HTTPException(422, 'برای پروژه، روش مرورگر و دست‌کم یک پیج یا تگ وارد کنید.')
+    return cfg.model_dump_json()
+
+
+@app.post('/api/projects')
+def create_project(cfg: Config):
+    raw = project_config(cfg)
+    project_id, stamp = uuid.uuid4().hex, now()
+    with db() as c:
+        c.execute('INSERT INTO projects VALUES (?,?,?,?)', (project_id, raw, stamp, stamp))
+    return get_project(project_id)
+
+
+@app.put('/api/projects/{project_id}')
+def edit_project(project_id: str, cfg: Config):
+    raw = project_config(cfg)
+    with db() as c:
+        updated = c.execute('UPDATE projects SET config=?,updated_at=? WHERE id=?', (raw, now(), project_id))
+        if not updated.rowcount:
+            raise HTTPException(404, 'پروژه پیدا نشد.')
+    return get_project(project_id)
+
+
+@app.post('/api/projects/{project_id}/runs')
+def run_project(project_id: str):
+    project = get_project(project_id)
+    return start_run(Config.model_validate_json(project['config']), project_id)
+
+
+@app.get('/api/projects/{project_id}/results')
+def get_project_results(project_id: str):
+    get_project(project_id)
+    return project_rows(project_id)
+
+
+@app.get('/api/projects/{project_id}/export/{ext}')
+def download_project(project_id: str, ext: str):
+    if ext not in ('csv', 'xlsx') or not re.fullmatch('[a-f0-9]{32}', project_id):
+        raise HTTPException(404)
+    project = get_project(project_id)
+    records = project_rows(project_id)
+    path = export_records(records, DATA / f'project-{project_id}.{ext}', ext)
+    return FileResponse(path, filename=export_filename(json.loads(project['config']), records, ext))
+
+
+@app.delete('/api/projects/{project_id}')
+def delete_project(project_id: str):
+    if not re.fullmatch('[a-f0-9]{32}', project_id):
+        raise HTTPException(404)
+    if not lock.acquire(False):
+        raise HTTPException(409, 'تا پایان اجرای فعال صبر کنید.')
+    try:
+        get_project(project_id)
+        with db() as c:
+            run_ids = [row[0] for row in c.execute('SELECT id FROM runs WHERE project_id=?', (project_id,))]
+            c.execute('DELETE FROM results WHERE run IN (SELECT id FROM runs WHERE project_id=?)', (project_id,))
+            c.execute('DELETE FROM runs WHERE project_id=?', (project_id,))
+            c.execute('DELETE FROM project_posts WHERE project_id=?', (project_id,))
+            c.execute('DELETE FROM projects WHERE id=?', (project_id,))
+        for name in [*run_ids, f'project-{project_id}']:
+            if re.fullmatch(r'(?:project-)?[a-f0-9]{32}', name):
+                for ext in ('csv', 'xlsx'):
+                    (DATA / f'{name}.{ext}').unlink(missing_ok=True)
+        return {'cleared': True}
+    finally:
+        lock.release()
