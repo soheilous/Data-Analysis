@@ -29,7 +29,10 @@ def main():
 def run(bundle, data_dir, *, self_test):
     os.environ['DIDBAN_DATA_DIR'] = data_dir
     if bundle:
-        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(bundle / 'chromium')
+        if (bundle / 'use-system-chrome').is_file():
+            os.environ['DIDBAN_BROWSER_CHANNEL'] = 'chrome'
+        else:
+            os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(bundle / 'chromium')
     frontend = bundle / 'dashboard' if bundle else Path(__file__).resolve().parent / 'frontend' / 'out'
     if not frontend.is_dir():
         raise SystemExit('Dashboard files missing. Run build-exe.ps1 to build Didban.exe.')
@@ -61,7 +64,7 @@ def run(bundle, data_dir, *, self_test):
                 with urlopen(url + '/api/projects', timeout=5) as response:
                     assert response.status == 200
                 with sync_playwright() as playwright:
-                    browser = playwright.chromium.launch(channel='chromium', headless=True)
+                    browser = playwright.chromium.launch(channel=os.environ.get('DIDBAN_BROWSER_CHANNEL', 'chromium'), headless=True)
                     page = browser.new_page()
                     page.goto(url)
                     page.get_by_role('heading', name='خلاصهٔ پروژه‌ها').wait_for()

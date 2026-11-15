@@ -465,7 +465,7 @@ def open_instagram_browser(chromium, profile_dir, background, log):
     modes = (True, False) if background else (False,)
     for headless in modes:
         context = chromium.launch_persistent_context(
-            str(profile_dir), channel='chromium', headless=headless, locale='en-US',
+            str(profile_dir), channel=os.environ.get('DIDBAN_BROWSER_CHANNEL', 'chromium'), headless=headless, locale='en-US',
             viewport={'width': 1366, 'height': 768}, accept_downloads=False,
         )
         try:
@@ -552,7 +552,7 @@ def collect_in_browser(config, save, log, known_posts=()):
                                     'کامنت سه پست پیاپی قابل خواندن نبود. اجرا متوقف شد و پست‌های ثبت‌شده در نتایج هستند.'
                                 )
     except Error:
-        raise CollectionError('مرورگر نتوانست صفحهٔ اینستاگرام را باز یا پردازش کند.') from None
+        raise CollectionError('مرورگر نتوانست صفحهٔ اینستاگرام را باز یا پردازش کند. نصب و دسترسی مرورگر را بررسی کنید.') from None
     if skipped:
         log(f'{len(skipped)} پست قبلاً ثبت شده بود و دوباره باز نشد.')
     if not saved_any and not skipped:

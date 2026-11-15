@@ -1,5 +1,6 @@
 """Manual Instagram sign-in in a temporary browser context."""
 
+import os
 import re
 from time import monotonic
 from urllib.parse import urlsplit
@@ -46,7 +47,7 @@ def get_instagram_session(username):
         raise CollectionError('نام کاربری ورود را بدون @ و بدون لینک وارد کنید.')
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=False)
+            browser = playwright.chromium.launch(headless=False, channel=os.environ.get('DIDBAN_BROWSER_CHANNEL'))
             try:
                 context = browser.new_context(locale='en-US')
                 page = context.new_page()
@@ -64,5 +65,5 @@ def get_instagram_session(username):
                 browser.close()
     except Error:
         raise CollectionError(
-            'باز کردن یا استفاده از مرورگر ورود ممکن نشد. نصب Chromium برای Playwright را بررسی کنید.'
+            'باز کردن یا استفاده از مرورگر ورود ممکن نشد. نصب و دسترسی مرورگر را بررسی کنید.'
         ) from None
