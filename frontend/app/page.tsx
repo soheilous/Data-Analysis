@@ -187,6 +187,7 @@ export default function Home(){
  const [refreshPosts, setRefreshPosts] = useState(false);
  const [likerLimit, setLikerLimit] = useState(100);
  const [postLimit,setPostLimit]=useState(8),[commentLimit,setCommentLimit]=useState(100),[likers,setLikers]=useState(false),[sync,setSync]=useState(false);
+ const [expandedPost, setExpandedPost] = useState<string | null>(null);
  const [selected,setSelected]=useState<string|null>(null),[posts,setPosts]=useState<Post[]>([]),[resultBusy,setResultBusy]=useState(false),[tab,setTab]=useState(0),[query,setQuery]=useState(''),[page,setPage]=useState(0),[deleting,setDeleting]=useState<Run|null>(null);
  const applyAddress = useCallback(() => {
    const params = new URLSearchParams(window.location.search);
@@ -197,7 +198,8 @@ export default function Home(){
    setSelected(run);
    setShowProjectData(!!project && params.get('view') === 'results' && !run);
    setDriveOpen(params.get('view') === 'drive');
-   setTab(run ? 2 : 0);
+   setTab(0);
+   setExpandedPost(null);
    setQuery('');
    setPage(0);
  }, []);
@@ -336,6 +338,7 @@ export default function Home(){
    try {
      const run = await api<{id: string}>('/api/projects/' + project.id + '/runs', {method: 'POST'});
      navigate({page: 'projects', project: project.id, run: run.id});
+     setTab(2);
      await refresh();
    } catch (error) {
      setError((error as Error).message);
@@ -397,6 +400,8 @@ export default function Home(){
  }
 
  async function remove(){if(!deleting)return;setBusy(true);try{await api('/api/runs/'+deleting.id+'/results',{method:'DELETE'});if(selected===deleting.id)navigate({page:'projects',project:projectId});setRuns(old=>old.filter(x=>x.id!==deleting.id));setDeleting(null);setNotice('اجرا و نتایج محلی آن پاک شدند');await refresh()}catch(e){setError((e as Error).message)}finally{setBusy(false)}}
+ const postOwners = [...new Set(posts.map(post => post.owner || (post.source_type === 'profile' ? post.source : '')).filter(Boolean))];
+ const resultTitle = postOwners.length ? postOwners.map(owner => '@' + owner).join('، ') : (selectedRun ? configOf(selectedRun).profiles?.map(name => '@' + name).join('، ') : '') || (showProjectData ? 'داده‌های پروژه' : 'نتایج اجرا');
  const comments=useMemo(()=>posts.flatMap(p=>(p.comments||[]).map(c=>({...c,post_url:p.post_url}))),[posts]);
  const filteredPosts=posts.filter(p=>[p.caption,p.owner,p.source,p.post_url].some(x=>x?.toLowerCase().includes(query.toLowerCase())));
  const filteredComments=comments.filter(c=>(c.text+' '+c.username).toLowerCase().includes(query.toLowerCase()));
@@ -605,7 +610,7 @@ export default function Home(){
      </Box>
      <Alert severity="info">{background ? 'اجرا در پس‌زمینه. ' : 'اجرا با پنجرهٔ مرورگر. '}{collectionScope === 'profile_tags' ? `${numbers(savedProfiles.length)} پیج و ` : 'دیسکاور، '}{numbers(hashtags.length)} تگ.</Alert></>}</Stack>
   </DialogContent><DialogActions sx={{p:3}}><Button disabled={busy} onClick={()=>step?setStep(step-1):closeCreate()}>{step?'مرحله قبل':'انصراف'}</Button><Button variant="contained" disabled={busy||active} startIcon={busy?<CircularProgress size={16}/>:step===2?<PlayArrow/>:undefined} onClick={()=>step===2?void start():nextStep()}>{step === 2 ? 'ذخیرهٔ پروژه' : 'ادامه'}</Button></DialogActions></Dialog>
-  <Dialog open={!!selected || showProjectData} onClose={()=>navigate({page:'projects',project:projectId})} fullWidth maxWidth="lg" dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6">{showProjectData ? 'داده‌های پروژه' : selectedRun?(configOf(selectedRun).title||configOf(selectedRun).target||'نتایج اجرا'):'نتایج اجرا'}</Typography><IconButton aria-label="بستن نتایج" onClick={()=>navigate({page:'projects',project:projectId})}><Close/></IconButton></Stack></DialogTitle><DialogContent>{selectedRun?.status==='running'&&<LinearProgress sx={{mb:2}}/>}{selectedRun?.status === 'awaiting_code' && (
+  <Dialog open={!!selected || showProjectData} onClose={()=>navigate({page:'projects',project:projectId})} fullWidth maxWidth="lg" dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6">{resultTitle}</Typography><IconButton aria-label="بستن نتایج" onClick={()=>navigate({page:'projects',project:projectId})}><Close/></IconButton></Stack></DialogTitle><DialogContent>{selectedRun?.status==='running'&&<LinearProgress sx={{mb:2}}/>}{selectedRun?.status === 'awaiting_code' && (
     <VerificationPrompt key={selectedRun.id} runId={selectedRun.id} onAccepted={refresh} />
    )}{selectedRun?.status === 'awaiting_security' && (
     <BrowserLoginPrompt key={selectedRun.id} runId={selectedRun.id} onAccepted={refresh} />
@@ -628,9 +633,32 @@ export default function Home(){
     </Alert>
    )}<Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}><Tabs value={tab} onChange={(_,value)=>{setTab(value);setPage(0)}}><Tab label={`پست‌ها (${numbers(posts.length)})`}/><Tab label={`کامنت‌ها (${numbers(comments.length)})`}/>{!showProjectData && <Tab label="گزارش اجرا"/>}</Tabs><Stack direction="row" spacing={1}>{['csv','xlsx'].map(ext=><Button key={ext} component="a" href={exportUrl + ext} startIcon={<DownloadOutlined/>} size="small">{ext.toUpperCase()}</Button>)}</Stack></Stack><Divider sx={{mb:2}}/>
    {tab<2&&<TextField label="جستجو در نتایج همین اجرا" value={query} onChange={e=>{setQuery(e.target.value);setPage(0)}} sx={{mb:2}} slotProps={{input:{startAdornment:<InputAdornment position="start"><Search/></InputAdornment>}}}/>}
-   {resultBusy?<Box sx={{p:5,textAlign:'center'}}><CircularProgress/></Box>:tab===2?<Box className="logs">{selectedRun?.logs||'هنوز پیامی ثبت نشده است.'}</Box>:tab===0?<Stack spacing={2}>{filteredPosts.slice(page*10,page*10+10).map(p=><Paper variant="outlined" key={p.post_url} sx={{p:2.5}}><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography dir="ltr" sx={{fontWeight:700}}>{p.owner?'@'+p.owner:'پست اینستاگرام'}</Typography><Button component="a" href={p.post_url} target="_blank" rel="noopener noreferrer" size="small">باز کردن پست</Button></Stack><Typography sx={{my:2,whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{p.caption||'کپشن ثبت نشده است.'}</Typography><Typography variant="caption" color="text.secondary" sx={{display:'block', mb: 1}}>
-    شناسهٔ پست {p.shortcode ?? '—'} · انتشار {dateLabel(p.published_at)} · جمع‌آوری {dateLabel(p.scraped_at)}
-   </Typography><Stack direction="row" spacing={1} sx={{flexWrap:"wrap"}}><Chip size="small" label={`${numbers(p.comments?.length||0)} کامنت دریافتی`}/><Chip size="small" variant="outlined" label={`${p.total_likes??'—'} لایک`}/>{p.source&&<Chip size="small" variant="outlined" label={(p.source_type==='hashtag'?'#':'@')+p.source}/>}</Stack></Paper>)}{!filteredPosts.length&&<Alert severity="info">پستی برای نمایش وجود ندارد.</Alert>}</Stack>:<TableContainer><Table size="small"><TableHead><TableRow><TableCell>کاربر</TableCell><TableCell>متن کامنت</TableCell><TableCell>زمان انتشار</TableCell><TableCell>پست</TableCell></TableRow></TableHead><TableBody>{filteredComments.slice(page*10,page*10+10).map((c,i)=><TableRow key={i}><TableCell dir="ltr">{c.username}</TableCell><TableCell sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{c.text}</TableCell><TableCell>{dateLabel(c.time)}</TableCell><TableCell><Button component="a" href={c.post_url} target="_blank" rel="noopener noreferrer" size="small">مشاهده</Button></TableCell></TableRow>)}</TableBody></Table>{!filteredComments.length&&<Alert severity="info">کامنتی برای نمایش وجود ندارد.</Alert>}</TableContainer>}
+   {resultBusy?<Box sx={{p:5,textAlign:'center'}}><CircularProgress/></Box>:tab===2?<Box className="logs">{selectedRun?.logs||'هنوز پیامی ثبت نشده است.'}</Box> :tab===0?<Stack spacing={2}>{filteredPosts.slice(page*10,page*10+10).map(post => {
+     const expanded = expandedPost === post.post_url;
+     const owner = post.owner || (post.source_type === 'profile' ? post.source : '');
+     return <Paper variant="outlined" key={post.post_url} sx={{p: 2.5}}>
+       <Stack direction="row" sx={{alignItems: 'center', justifyContent: 'space-between', gap: 1}}>
+         <Typography dir="ltr" sx={{fontWeight: 700}}>{owner ? '@' + owner : 'پست اینستاگرام'}</Typography>
+         <Button component="a" href={post.post_url} target="_blank" rel="noopener noreferrer" size="small">باز کردن پست</Button>
+       </Stack>
+       <Box component="button" type="button" aria-expanded={expanded} onClick={() => setExpandedPost(expanded ? null : post.post_url)} sx={{display: 'block', width: '100%', textAlign: 'start', border: 0, p: 0, bgcolor: 'transparent', color: 'inherit', cursor: 'pointer'}}>
+         <Typography sx={{my: 2, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}>{post.caption || 'متن پست ثبت نشده است.'}</Typography>
+         <Typography variant="caption" color="text.secondary" sx={{display: 'block', mb: 1}}>شناسهٔ پست {post.shortcode ?? '—'} · انتشار {dateLabel(post.published_at)} · جمع‌آوری {dateLabel(post.scraped_at)}</Typography>
+         <Stack direction="row" spacing={1} sx={{flexWrap: 'wrap', gap: 1}}>
+           <Chip size="small" label={`${numbers(post.comments?.length || 0)} کامنت دریافتی · ${expanded ? 'بستن' : 'نمایش کامنت‌ها'}`}/>
+           <Chip size="small" variant="outlined" label={`${post.total_likes ?? '—'} لایک`}/>
+           {post.source && <Chip size="small" variant="outlined" label={(post.source_type === 'hashtag' ? '#' : '@') + post.source}/>}
+         </Stack>
+       </Box>
+       {expanded && <Box sx={{mt: 2}}><Divider sx={{mb: 2}}/>
+         {!post.comments?.length ? <Typography color="text.secondary">کامنتی برای این پست ثبت نشده است.</Typography> : <Stack spacing={1.5}>{post.comments.map((comment, index) => <Box key={index} sx={{p: 1.5, bgcolor: 'action.hover', borderRadius: 1}}>
+           <Typography sx={{fontWeight: 700}} dir="ltr">@{comment.username}</Typography>
+           <Typography sx={{whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}>{comment.text}</Typography>
+           {comment.time && <Typography variant="caption" color="text.secondary">{dateLabel(comment.time)}</Typography>}
+         </Box>)}</Stack>}
+       </Box>}
+     </Paper>;
+   })}{!filteredPosts.length&&<Alert severity="info">پستی برای نمایش وجود ندارد.</Alert>}</Stack>:<TableContainer><Table size="small"><TableHead><TableRow><TableCell>کاربر</TableCell><TableCell>متن کامنت</TableCell><TableCell>زمان انتشار</TableCell><TableCell>پست</TableCell></TableRow></TableHead><TableBody>{filteredComments.slice(page*10,page*10+10).map((c,i)=><TableRow key={i}><TableCell dir="ltr">{c.username}</TableCell><TableCell sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{c.text}</TableCell><TableCell>{dateLabel(c.time)}</TableCell><TableCell><Button component="a" href={c.post_url} target="_blank" rel="noopener noreferrer" size="small">مشاهده</Button></TableCell></TableRow>)}</TableBody></Table>{!filteredComments.length&&<Alert severity="info">کامنتی برای نمایش وجود ندارد.</Alert>}</TableContainer>}
    {tab<2&&<TablePagination component="div" count={tab===0?filteredPosts.length:filteredComments.length} rowsPerPage={10} rowsPerPageOptions={[10]} page={page} onPageChange={(_,value)=>setPage(value)} labelDisplayedRows={({from,to,count})=>`${numbers(from)} تا ${numbers(to)} از ${numbers(count)}`} getItemAriaLabel={type=>type==='next'?'صفحه بعد':'صفحه قبل'}/>}
   </DialogContent></Dialog>
   <Dialog open={!!projectToDelete} onClose={() => !busy && setProjectToDelete(null)} dir="rtl">

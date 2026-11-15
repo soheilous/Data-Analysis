@@ -429,6 +429,21 @@ def read_post(page, shortcode, url, config, log, *, required_tags=None):
             );
             return link?.querySelector('time').dateTime || null;
         }""")
+        visible_post = page.evaluate(r"""() => {
+            const caption = document.querySelector('[data-testid="post-caption"], article h1, main h1');
+            const header = document.querySelector('article header, main header, [role="dialog"] header');
+            const owner = header && [...header.querySelectorAll('a[href]')].map(a => {
+                const match = a.getAttribute('href')?.match(/^\/([A-Za-z0-9_.]{1,30})\/?(?:\?.*)?$/);
+                return match?.[1];
+            }).find(name => name && !['explore', 'accounts', 'direct', 'reels'].includes(name.toLowerCase()));
+            return {caption: caption?.textContent?.trim() || null, owner: owner || null};
+        }""")
+        if not network.fields.get('caption') and visible_post['caption']:
+            network.fields['caption'] = visible_post['caption']
+        if not network.fields.get('owner') and visible_post['owner']:
+            network.fields['owner'] = visible_post['owner']
+        if not network.fields.get('caption'):
+            log('متن این پست از صفحه یا پاسخ شبکه قابل خواندن نبود.')
         return {
             **network.fields,
             'post_url': url,

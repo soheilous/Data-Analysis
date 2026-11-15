@@ -151,6 +151,8 @@ class PostResponses:
             caption = caption_edges[0]
         if isinstance(caption, dict) and isinstance(caption.get('text'), str):
             self.fields['caption'] = caption['text']
+        elif isinstance(caption, str):
+            self.fields['caption'] = caption
         published = timestamp(node.get('taken_at_timestamp') or node.get('taken_at'))
         if published:
             self.fields['published_at'] = published
