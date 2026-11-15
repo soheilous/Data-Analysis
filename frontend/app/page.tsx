@@ -188,6 +188,31 @@ export default function Home(){
  const [likerLimit, setLikerLimit] = useState(100);
  const [postLimit,setPostLimit]=useState(8),[commentLimit,setCommentLimit]=useState(100),[likers,setLikers]=useState(false),[sync,setSync]=useState(false);
  const [selected,setSelected]=useState<string|null>(null),[posts,setPosts]=useState<Post[]>([]),[resultBusy,setResultBusy]=useState(false),[tab,setTab]=useState(0),[query,setQuery]=useState(''),[page,setPage]=useState(0),[deleting,setDeleting]=useState<Run|null>(null);
+ const applyAddress = useCallback(() => {
+   const params = new URLSearchParams(window.location.search);
+   const project = params.get('project');
+   const run = params.get('run');
+   setNav(params.get('page') === 'projects' || project || run ? 1 : 0);
+   setProjectId(project);
+   setSelected(run);
+   setShowProjectData(!!project && params.get('view') === 'results' && !run);
+   setDriveOpen(params.get('view') === 'drive');
+   setTab(run ? 2 : 0);
+   setQuery('');
+   setPage(0);
+ }, []);
+ const navigate = useCallback((params: Record<string, string | null>) => {
+   const search = new URLSearchParams();
+   Object.entries(params).forEach(([key, value]) => { if (value) search.set(key, value); });
+   const address = window.location.pathname + (search.size ? '?' + search.toString() : '');
+   if (address !== window.location.pathname + window.location.search) window.history.pushState(null, '', address);
+   applyAddress();
+ }, [applyAddress]);
+ useEffect(() => {
+   applyAddress();
+   window.addEventListener('popstate', applyAddress);
+   return () => window.removeEventListener('popstate', applyAddress);
+ }, [applyAddress]);
  const refresh=useCallback(async()=>{try{const [history, saved] = await Promise.all([api<Run[]>('/api/runs'), api<Project[]>('/api/projects')]);setRuns(history);setProjects(saved);setError('')}catch(e){setError((e as Error).message)}finally{setLoading(false)}},[]);
  useEffect(()=>{void refresh();const timer=setInterval(()=>{if(!document.hidden)void refresh()},4000);return()=>clearInterval(timer)},[refresh]);
  const selectedRun=runs.find(r=>r.id===selected);
@@ -296,8 +321,7 @@ export default function Home(){
        }),
      });
      setCreating(false);
-     setProjectId(project.id);
-     setNav(1);
+     navigate({page: 'projects', project: project.id});
      setNotice('تنظیمات پروژه ذخیره شد.');
      await refresh();
    } catch (error) {
@@ -311,9 +335,7 @@ export default function Home(){
    setBusy(true);
    try {
      const run = await api<{id: string}>('/api/projects/' + project.id + '/runs', {method: 'POST'});
-     setShowProjectData(false);
-     setSelected(run.id);
-     setTab(2);
+     navigate({page: 'projects', project: project.id, run: run.id});
      await refresh();
    } catch (error) {
      setError((error as Error).message);
@@ -327,7 +349,7 @@ export default function Home(){
    setBusy(true);
    try {
      await api('/api/projects/' + projectToDelete.id, {method: 'DELETE'});
-     setProjectId(null);
+     navigate({page: 'projects'});
      setProjectToDelete(null);
      setNotice('پروژه و داده‌های محلی آن حذف شدند.');
      await refresh();
@@ -365,10 +387,7 @@ export default function Home(){
      setTestingPost(false);
      setNotice('آزمون لینک پست آغاز شد.');
      await refresh();
-     setShowProjectData(false);
-     setSelected(run.id);
-     setQuery('');
-     setPage(0);
+     navigate({page: 'projects', run: run.id});
      setTab(0);
    } catch (error) {
      setFormError((error as Error).message);
@@ -377,16 +396,16 @@ export default function Home(){
    }
  }
 
- async function remove(){if(!deleting)return;setBusy(true);try{await api('/api/runs/'+deleting.id+'/results',{method:'DELETE'});if(selected===deleting.id)setSelected(null);setRuns(old=>old.filter(x=>x.id!==deleting.id));setDeleting(null);setNotice('اجرا و نتایج محلی آن پاک شدند');await refresh()}catch(e){setError((e as Error).message)}finally{setBusy(false)}}
+ async function remove(){if(!deleting)return;setBusy(true);try{await api('/api/runs/'+deleting.id+'/results',{method:'DELETE'});if(selected===deleting.id)navigate({page:'projects',project:projectId});setRuns(old=>old.filter(x=>x.id!==deleting.id));setDeleting(null);setNotice('اجرا و نتایج محلی آن پاک شدند');await refresh()}catch(e){setError((e as Error).message)}finally{setBusy(false)}}
  const comments=useMemo(()=>posts.flatMap(p=>(p.comments||[]).map(c=>({...c,post_url:p.post_url}))),[posts]);
  const filteredPosts=posts.filter(p=>[p.caption,p.owner,p.source,p.post_url].some(x=>x?.toLowerCase().includes(query.toLowerCase())));
  const filteredComments=comments.filter(c=>(c.text+' '+c.username).toLowerCase().includes(query.toLowerCase()));
  return <Box sx={{display:'flex',minHeight:'100vh'}}>
-  <DriveFiles open={driveOpen} onClose={() => setDriveOpen(false)}/>
+  <DriveFiles open={driveOpen} onClose={() => navigate({page: nav === 1 ? 'projects' : null, project: projectId})}/>
   <Box component="aside" style={{right:0}} sx={{width:240,position:'fixed',top:0,bottom:0,bgcolor:'#102e26',color:'#fff',p:3,display:{xs:'none',md:'flex'},flexDirection:'column'}}>
    <Stack direction="row" spacing={1.5} sx={{alignItems:"center",mb:6}}><Avatar variant="rounded" sx={{bgcolor:'#cbdf91',color:'#183c2d'}}><TravelExplore/></Avatar><Box><Typography variant="h5">دیدبان</Typography><Typography variant="caption" sx={{color:'#9bb4a8'}}>فضای کار پایش بازار</Typography></Box></Stack>
    <Typography variant="caption" sx={{color:'#819c90',mb:2}}>فضای کار شما</Typography>
-   {['نمای کلی','پروژه‌ها و اجراها'].map((text,i)=><Button key={text} onClick={()=>{setNav(i);setProjectId(null)}} startIcon={i===0?<DashboardOutlined/>:<LayersOutlined/>} sx={{justifyContent:'flex-start',mb:1,color:nav===i?'#e3f6b0':'#a9c0b4',bgcolor:nav===i?'#24483a':'transparent'}}>{text}</Button>)}
+   {['نمای کلی','پروژه‌ها و اجراها'].map((text,i)=><Button key={text} onClick={()=>navigate({page:i === 1 ? 'projects' : null})} startIcon={i===0?<DashboardOutlined/>:<LayersOutlined/>} sx={{justifyContent:'flex-start',mb:1,color:nav===i?'#e3f6b0':'#a9c0b4',bgcolor:nav===i?'#24483a':'transparent'}}>{text}</Button>)}
    <Box sx={{mt:'auto',p:2,border:'1px solid #365346',borderRadius:3}}><Typography variant="body2">داده‌های شما، روی سیستم شما</Typography><Typography variant="caption" sx={{color:'#9bb4a8',display:'block',mt:1}}>رمز ورود در پروژه و نسخه‌های پشتیبان ذخیره نمی‌شود.</Typography></Box>
   </Box>
   <Box component="main" sx={{marginInlineStart:{md:'240px'},width:{xs:'100%',md:'calc(100% - 240px)'}}}>
@@ -394,11 +413,11 @@ export default function Home(){
    <Container maxWidth="xl" sx={{py:{xs:3,md:5},px:{md:5}}}>
     {error&&<Alert severity="error" sx={{mb:2}}>{error}</Alert>}{notice&&<Alert severity="success" onClose={()=>setNotice('')} sx={{mb:2}}>{notice}</Alert>}
     <Stack direction={{xs:'column',sm:'row'}} spacing={2} sx={{alignItems:{sm:'center'},justifyContent:"space-between",mb:4}}><Box><Typography variant="h4" sx={{mt:.5,mb:1}}>{nav===0?'نمای کلی':currentProject?'جزئیات پروژه':'پروژه‌ها و اجراها'}</Typography></Box><Stack direction={{xs: 'column', sm: 'row'}} spacing={1}>
-      <Button variant="outlined" onClick={() => setDriveOpen(true)}>فایل‌های Google Drive</Button>
+      <Button variant="outlined" onClick={() => navigate({page: nav === 1 ? 'projects' : null, project: projectId, view: 'drive'})}>فایل‌های Google Drive</Button>
       <Button variant="outlined" disabled={active} onClick={() => openPostTest()}>آزمون لینک پست</Button>
       <Button variant="contained" startIcon={<Add/>} disabled={active} onClick={() => openProject()}>پروژه جدید</Button>
     </Stack></Stack>
-    <Tabs value={nav} onChange={(_, value) => {setNav(value);setProjectId(null);}} sx={{display: {md: 'none'}, mb: 2}}>
+    <Tabs value={nav} onChange={(_, value) => navigate({page: value === 1 ? 'projects' : null})} sx={{display: {md: 'none'}, mb: 2}}>
       <Tab label="نمای کلی" />
       <Tab label="پروژه‌ها و اجراها" />
     </Tabs>
@@ -408,20 +427,20 @@ export default function Home(){
         runs={runs}
         loading={loading}
         statuses={labels}
-        onOpen={id => {setProjectId(id);setNav(1);}}
+        onOpen={id => navigate({page: 'projects', project: id})}
       />
     ) : <>
     {currentProject ? (
       <Card sx={{p: 3, mb: 3}}>
         <Stack spacing={2}>
-          <Button sx={{alignSelf: 'flex-start'}} onClick={() => setProjectId(null)}>بازگشت به پروژه‌ها</Button>
+          <Button sx={{alignSelf: 'flex-start'}} onClick={() => navigate({page: 'projects'})}>بازگشت به پروژه‌ها</Button>
           <Typography variant="h5">{configOf(currentProject).title}</Typography>
           <Typography color="text.secondary">
             {[...(configOf(currentProject).profiles ?? []), ...(configOf(currentProject).hashtags ?? []).map(tag => '#' + tag)].join('، ')}
           </Typography>
           <Stack direction="row" sx={{gap: 1, flexWrap: 'wrap'}}>
             <Button variant="contained" disabled={active || busy} onClick={() => void runProject(currentProject)}>شروع جمع‌آوری</Button>
-            <Button onClick={() => {setSelected(null);setShowProjectData(true);setTab(0);setPage(0);setQuery('');}}>داده‌های پروژه</Button>
+            <Button onClick={() => navigate({page: 'projects', project: currentProject.id, view: 'results'})}>داده‌های پروژه</Button>
             <Button component="a" href={'/api/projects/' + currentProject.id + '/export/csv'}>CSV</Button>
             <Button component="a" href={'/api/projects/' + currentProject.id + '/export/xlsx'}>Excel</Button>
             <Button onClick={() => openProject(currentProject)}>ویرایش پروژه</Button>
@@ -438,7 +457,7 @@ export default function Home(){
           <Stack spacing={1}>
             {projects.map(project => (
               <Button key={project.id} variant="outlined" sx={{justifyContent: 'flex-start'}}
-                onClick={() => {setProjectId(project.id);setNav(1);}}>
+                onClick={() => navigate({page: 'projects', project: project.id})}>
                 {configOf(project).title}
               </Button>
             ))}
@@ -464,7 +483,7 @@ export default function Home(){
                 <TableCell>{numbers(run.comments_count)}</TableCell>
                 <TableCell>
                   <Button onClick={() => {
-                    setShowProjectData(false);setSelected(run.id);setTab(2);setQuery('');setPage(0);
+                    navigate({page: 'projects', project: projectId, run: run.id});
                   }}>مشاهده</Button>
                   {!currentProject && <>
                     <Button disabled={active} onClick={() => openProject(run)}>اجرای دوباره</Button>
@@ -586,7 +605,7 @@ export default function Home(){
      </Box>
      <Alert severity="info">{background ? 'اجرا در پس‌زمینه. ' : 'اجرا با پنجرهٔ مرورگر. '}{collectionScope === 'profile_tags' ? `${numbers(savedProfiles.length)} پیج و ` : 'دیسکاور، '}{numbers(hashtags.length)} تگ.</Alert></>}</Stack>
   </DialogContent><DialogActions sx={{p:3}}><Button disabled={busy} onClick={()=>step?setStep(step-1):closeCreate()}>{step?'مرحله قبل':'انصراف'}</Button><Button variant="contained" disabled={busy||active} startIcon={busy?<CircularProgress size={16}/>:step===2?<PlayArrow/>:undefined} onClick={()=>step===2?void start():nextStep()}>{step === 2 ? 'ذخیرهٔ پروژه' : 'ادامه'}</Button></DialogActions></Dialog>
-  <Dialog open={!!selected || showProjectData} onClose={()=>{setSelected(null);setShowProjectData(false)}} fullWidth maxWidth="lg" dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6">{showProjectData ? 'داده‌های پروژه' : selectedRun?(configOf(selectedRun).title||configOf(selectedRun).target||'نتایج اجرا'):'نتایج اجرا'}</Typography><IconButton aria-label="بستن نتایج" onClick={()=>{setSelected(null);setShowProjectData(false)}}><Close/></IconButton></Stack></DialogTitle><DialogContent>{selectedRun?.status==='running'&&<LinearProgress sx={{mb:2}}/>}{selectedRun?.status === 'awaiting_code' && (
+  <Dialog open={!!selected || showProjectData} onClose={()=>navigate({page:'projects',project:projectId})} fullWidth maxWidth="lg" dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6">{showProjectData ? 'داده‌های پروژه' : selectedRun?(configOf(selectedRun).title||configOf(selectedRun).target||'نتایج اجرا'):'نتایج اجرا'}</Typography><IconButton aria-label="بستن نتایج" onClick={()=>navigate({page:'projects',project:projectId})}><Close/></IconButton></Stack></DialogTitle><DialogContent>{selectedRun?.status==='running'&&<LinearProgress sx={{mb:2}}/>}{selectedRun?.status === 'awaiting_code' && (
     <VerificationPrompt key={selectedRun.id} runId={selectedRun.id} onAccepted={refresh} />
    )}{selectedRun?.status === 'awaiting_security' && (
     <BrowserLoginPrompt key={selectedRun.id} runId={selectedRun.id} onAccepted={refresh} />
@@ -597,7 +616,7 @@ export default function Home(){
           color="inherit"
           disabled={active}
           onClick={() => {
-            setSelected(null);
+            navigate({page: 'projects', project: projectId});
             openProject(selectedRun, 'browser');
           }}
         >
