@@ -78,7 +78,7 @@ def find_post_links(page, kind, name, limit, scrolls, check_access=lambda: None,
                 location = urlsplit(href)
                 if location.hostname != 'www.instagram.com':
                     continue
-                match = re.fullmatch(r'/(p|reel|reels)/([\w-]+)/?', location.path, re.ASCII)
+                match = re.fullmatch(r'/(?:[A-Za-z0-9_.]{1,30}/)?(p|reel|reels)/([\w-]+)/?', location.path, re.ASCII)
                 if not match:
                     continue
                 category, shortcode = match.groups()
@@ -316,13 +316,24 @@ def normalized_tag(value):
     return normalize('NFC', value).casefold()
 
 
+def visible_post_details(page):
+    return page.evaluate(r"""() => {
+        const caption = document.querySelector('[data-testid="post-caption"], article h1, main h1');
+        const header = document.querySelector('article header, main header, [role="dialog"] header');
+        const owner = header && [...header.querySelectorAll('a[href]')].map(a => {
+            const match = a.getAttribute('href')?.match(/^\/([A-Za-z0-9_.]{1,30})\/?(?:\?.*)?$/);
+            return match?.[1];
+        }).find(name => name && !['explore', 'accounts', 'direct', 'reels'].includes(name.toLowerCase()));
+        const description = document.querySelector('meta[property="og:description"]')?.content || '';
+        const metadataCaption = description.match(/:\s*["“]([\s\S]*)["”]\.?(?:\s|[\u200e\u200f])*$/);
+        return {caption: caption?.textContent?.trim() || metadataCaption?.[1]?.trim() || null, owner: owner || null};
+    }""")
+
+
 def matching_caption(page, network_caption, required_tags):
-    captions = [network_caption] if network_caption is not None else page.evaluate("""() => [
-        ...Array.from(document.querySelectorAll('article h1, main h1, [data-testid="post-caption"]'), node => node.textContent),
-        ...Array.from(document.querySelectorAll('meta[property="og:description"], meta[name="twitter:description"]'), node => node.content),
-    ]""")
+    captions = [network_caption, visible_post_details(page)['caption']]
     for caption in captions:
-        if required_tags.intersection(map(normalized_tag, CAPTION_TAG.findall(caption))):
+        if caption and required_tags.intersection(map(normalized_tag, CAPTION_TAG.findall(caption))):
             return caption
     return None
 
@@ -337,7 +348,7 @@ def read_post(page, shortcode, url, config, log, *, required_tags=None):
         if (
             (response and response.status >= 400)
             or location.hostname != 'www.instagram.com'
-            or location.path.rstrip('/') != urlsplit(url).path.rstrip('/')
+            or not re.fullmatch(r'/(?:[A-Za-z0-9_.]{1,30}/)?(?:p|reel|reels)/' + re.escape(shortcode) + r'/?', location.path, re.ASCII)
         ):
             raise CollectionError('اینستاگرام صفحهٔ پست را باز نکرد.')
         page.wait_for_timeout(1500)
@@ -345,7 +356,7 @@ def read_post(page, shortcode, url, config, log, *, required_tags=None):
             caption = matching_caption(page, network.fields.get('caption'), required_tags)
             if caption is None:
                 return None
-            network.fields.setdefault('caption', caption)
+            network.fields['caption'] = caption
         for _ in range(3):
             check_page_access(page, network)
             network.read_pending_comments()
@@ -429,15 +440,7 @@ def read_post(page, shortcode, url, config, log, *, required_tags=None):
             );
             return link?.querySelector('time').dateTime || null;
         }""")
-        visible_post = page.evaluate(r"""() => {
-            const caption = document.querySelector('[data-testid="post-caption"], article h1, main h1');
-            const header = document.querySelector('article header, main header, [role="dialog"] header');
-            const owner = header && [...header.querySelectorAll('a[href]')].map(a => {
-                const match = a.getAttribute('href')?.match(/^\/([A-Za-z0-9_.]{1,30})\/?(?:\?.*)?$/);
-                return match?.[1];
-            }).find(name => name && !['explore', 'accounts', 'direct', 'reels'].includes(name.toLowerCase()));
-            return {caption: caption?.textContent?.trim() || null, owner: owner || null};
-        }""")
+        visible_post = visible_post_details(page)
         if not network.fields.get('caption') and visible_post['caption']:
             network.fields['caption'] = visible_post['caption']
         if not network.fields.get('owner') and visible_post['owner']:
@@ -496,6 +499,7 @@ def collect_in_browser(config, save, log, known_posts=()):
         sources += [('hashtag', name) for name in config['hashtags']]
     required_tags = {normalized_tag(tag) for tag in config['hashtags']} if scope == 'profile_tags' else None
     saved_any = False
+    found_links = False
     skipped = set()
     checked = set()
     unresolved_in_a_row = 0
@@ -528,7 +532,10 @@ def collect_in_browser(config, save, log, known_posts=()):
                     )
                     check_page_access(page, source_responses)
                     if not links:
-                        log('پستی در صفحهٔ این منبع پیدا نشد.')
+                        log('لینک پستی در صفحهٔ این منبع پیدا نشد.')
+                    else:
+                        found_links = True
+                        log(f'{len(links)} لینک پست برای بررسی پیدا شد.')
                     for shortcode, url in links.items():
                         if shortcode in checked:
                             continue
@@ -557,6 +564,8 @@ def collect_in_browser(config, save, log, known_posts=()):
         log(f'{len(skipped)} پست قبلاً ثبت شده بود و دوباره باز نشد.')
     if not saved_any and not skipped:
         if scope == 'profile_tags':
+            if not found_links:
+                raise CollectionError('لینک پستی در پیج‌های انتخاب‌شده پیدا نشد. دسترسی و وضعیت صفحهٔ پیج را بررسی کنید.')
             raise CollectionError('در پست‌های بررسی‌شدهٔ پیج‌ها، کپشنی با تگ‌های واردشده پیدا نشد.')
         if scope == 'discover':
             raise CollectionError('دیسکاور برای تگ‌های واردشده پستی نشان نداد.')

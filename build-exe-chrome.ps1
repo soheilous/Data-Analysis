@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Python, [string]$Wheelhouse)
+param([string]$Python, [string]$Wheelhouse, [string]$Name = 'Didban-Chrome')
 $ErrorActionPreference = 'Stop'
 
 function Invoke-Checked($Executable, [string[]]$Arguments) {
@@ -40,7 +40,7 @@ try {
     $chromeMarker = Join-Path $work 'use-system-chrome'
     New-Item -ItemType File -Path $chromeMarker -Force | Out-Null
     Invoke-Checked $Python @(
-        '-m', 'PyInstaller', '--noconfirm', '--onefile', '--name', 'Didban-Chrome',
+        '-m', 'PyInstaller', '--noconfirm', '--onefile', '--name', $Name,
         '--workpath', $work, '--specpath', $work, '--distpath', $dist,
         '--add-data', "$(Join-Path $frontendBuild 'out');dashboard",
         '--add-data', "$chromeMarker;.",
@@ -49,7 +49,7 @@ try {
         '--hidden-import', 'uvicorn.protocols.http.h11_impl',
         'desktop.py'
     )
-    Write-Host "Built: $(Join-Path $dist 'Didban-Chrome.exe')"
+    Write-Host "Built: $(Join-Path $dist ($Name + ".exe"))"
 } finally {
     $env:DIDBAN_STATIC_BUILD = $previousBuildMode
     $env:PLAYWRIGHT_BROWSERS_PATH = $previousBrowsersPath
