@@ -7,3 +7,7 @@ data/
 node_modules/
 .next/
 .env*
+
+build/
+dist/
+frontend/out/

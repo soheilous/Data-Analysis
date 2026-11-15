@@ -1,15 +1,18 @@
 'use client';
 import {useCallback,useEffect,useMemo,useState} from 'react';
 import {Alert,Avatar,Box,Button,Card,Chip,CircularProgress,Container,Dialog,DialogActions,DialogContent,DialogTitle,Divider,FormControlLabel,IconButton,InputAdornment,LinearProgress,MenuItem,Paper,Stack,Step,StepLabel,Stepper,Switch,Tab,Tabs,Table,TableBody,TableCell,TableContainer,TableHead,TablePagination,TableRow,TextField,Tooltip,Typography} from '@mui/material';
-import {Add,Close,DashboardOutlined,DeleteOutlined,DownloadOutlined,ForumOutlined,Instagram,LayersOutlined,PlayArrow,Refresh,Search,Tag,TravelExplore} from '@mui/icons-material';
+import {Add,Close,DashboardOutlined,DeleteOutlined,DownloadOutlined,LayersOutlined,PlayArrow,Refresh,Search,Tag,TravelExplore} from '@mui/icons-material';
 import {ChipInput} from './chip-input';
+import {ProjectOverview} from './project-overview';
 type CollectionMethod = 'direct' | 'browser' | 'instagrapi_probe' | 'instagrapi';
+type CollectionScope = 'profile_tags' | 'discover';
 type Config = {
   companies?: string[];
   title?: string;
   target?: string;
   profiles?: string[];
   hashtags?: string[];
+  collection_scope?: CollectionScope | null;
   probe_hashtag?: string | null;
   post_url?: string | null;
   max_posts?: number;
@@ -122,9 +125,49 @@ function BrowserLoginPrompt({runId, onAccepted}: {runId: string; onAccepted: () 
   );
 }
 
+type DriveFile = {path: string; name: string; modified: string; size: number};
+function DriveFiles({open, onClose}: {open: boolean; onClose: () => void}) {
+  const [files, setFiles] = useState<DriveFile[]>([]);
+  const [error, setError] = useState('');
+  const [target, setTarget] = useState<DriveFile | null>(null);
+  const [action, setAction] = useState<'rename' | 'delete'>('rename');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try { setFiles(await api<DriveFile[]>('/api/drive/files')); setError(''); }
+    catch (e) { setError((e as Error).message); }
+  }, []);
+  useEffect(() => { if (open) void load(); }, [open, load]);
+  async function save() {
+    if (!target) return;
+    setBusy(true); setError('');
+    try {
+      await api('/api/drive/files', {method: action === 'rename' ? 'PATCH' : 'DELETE', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path: target.path, name})});
+      setTarget(null); await load();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  return <Dialog open={open} onClose={onClose} fullWidth maxWidth="md" dir="rtl">
+    <DialogTitle>فایل‌های دیدبان در Google Drive</DialogTitle>
+    <DialogContent>
+      <Typography color="text.secondary" sx={{mb: 2}}>فایل‌های پوشهٔ خروجی دیدبان، شامل نسخه‌های قبلی، در این فهرست نمایش داده می‌شوند.</Typography>
+      {error && <Alert severity="error" sx={{mb: 2}}>{error}</Alert>}
+      <Button onClick={() => void load()}>تازه‌سازی</Button>
+      {files.length === 0 ? <Typography>فایلی در این پوشه پیدا نشد.</Typography> : <TableContainer><Table><TableHead><TableRow><TableCell>نام و پوشه</TableCell><TableCell>آخرین تغییر</TableCell><TableCell>عملیات</TableCell></TableRow></TableHead><TableBody>
+        {files.map(file => <TableRow key={file.path}><TableCell><Typography>{file.name}</Typography><Typography variant="caption" sx={{overflowWrap: 'anywhere'}}>{file.path}</Typography></TableCell><TableCell>{dateLabel(file.modified)}</TableCell><TableCell><Button onClick={() => {setTarget(file); setName(file.name); setAction('rename');}}>تغییر نام</Button><Button color="error" onClick={() => {setTarget(file); setAction('delete');}}>حذف</Button></TableCell></TableRow>)}
+      </TableBody></Table></TableContainer>}
+    </DialogContent><DialogActions><Button onClick={onClose}>بستن</Button></DialogActions>
+    <Dialog open={!!target} onClose={() => !busy && setTarget(null)} dir="rtl"><DialogTitle>{action === 'rename' ? 'تغییر نام فایل' : 'حذف فایل از Drive؟'}</DialogTitle><DialogContent>
+      {action === 'rename' ? <TextField autoFocus fullWidth label="نام فایل همراه با پسوند" value={name} onChange={e => setName(e.target.value)} sx={{mt: 1}}/> : <Typography>{target?.path}</Typography>}
+      {error && <Alert severity="error" sx={{mt: 2}}>{error}</Alert>}
+    </DialogContent><DialogActions><Button disabled={busy} onClick={() => setTarget(null)}>انصراف</Button><Button disabled={busy} color={action === 'delete' ? 'error' : 'primary'} onClick={() => void save()}>{action === 'delete' ? 'حذف' : 'ذخیره'}</Button></DialogActions></Dialog>
+  </Dialog>;
+}
+
 export default function Home(){
  const [runs,setRuns]=useState<Run[]>([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState(''),[nav,setNav]=useState(0);
  const [projects, setProjects] = useState<Project[]>([]);
+ const [driveOpen, setDriveOpen] = useState(false);
  const [projectId, setProjectId] = useState<string | null>(null);
  const [editingProject, setEditingProject] = useState<string | null>(null);
  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
@@ -135,6 +178,7 @@ export default function Home(){
  const [testCommentLimit, setTestCommentLimit] = useState(20);
  const [creating,setCreating]=useState(false),[step,setStep]=useState(0),[busy,setBusy]=useState(false),[formError,setFormError]=useState('');
  const [title,setTitle]=useState('');
+ const [collectionScope, setCollectionScope] = useState<CollectionScope>('profile_tags');
  const [companies,setCompanies]=useState<string[]>([]),[hashtags,setHashtags]=useState<string[]>([]);
  const [tagDraft, setTagDraft] = useState('');
  const [background, setBackground] = useState(false);
@@ -155,7 +199,7 @@ export default function Home(){
    : '/api/runs/' + selected + '/export/';
  const visibleRuns = projectId ? runs.filter(run => run.project_id === projectId) : runs.filter(run => !run.project_id);
  useEffect(()=>{if(!resultUrl)return;let alive=true;async function load(){try{const data=await api<Post[]>(resultUrl!);if(alive)setPosts(data)}catch(e){if(alive)setError((e as Error).message)}finally{if(alive)setResultBusy(false)}}setResultBusy(true);setPosts([]);void load();const timer=setInterval(()=>{if(!document.hidden)void load()},4000);return()=>{alive=false;clearInterval(timer)}},[resultUrl]);
- const totalPosts=runs.reduce((n,r)=>n+r.posts_count,0),totalComments=runs.reduce((n,r)=>n+r.comments_count,0),active=runs.some(r => ['running', 'awaiting_code', 'awaiting_security'].includes(r.status));
+ const active=runs.some(r => ['running', 'awaiting_code', 'awaiting_security'].includes(r.status));
  function readChips(items: string[], draft: string, kind: 'tag' | 'profile') {
    const isTag = kind === 'tag';
    const additions = draft.split(/[,،\n]+/).map(item => item.trim()).filter(Boolean);
@@ -196,6 +240,7 @@ export default function Home(){
    }
    setEditingProject(run && 'updated_at' in run ? run.id : null);
    setTitle(config.title ?? config.target ?? '');
+   setCollectionScope(config.collection_scope ?? (run && !config.profiles?.length && !config.target ? 'discover' : 'profile_tags'));
    setCompanies(config.companies ?? []);
    setHashtags(config.hashtags ?? []);
    setSavedProfiles(config.profiles?.length ? config.profiles : config.target ? [config.target] : []);
@@ -218,14 +263,16 @@ export default function Home(){
    if (step === 1) {
      try {
        const nextTags = readChips(hashtags, tagDraft, 'tag');
-       const nextProfiles = readChips(savedProfiles, profileDraft, 'profile');
-       if (!title.trim() || (!nextTags.length && !nextProfiles.length)) {
-         throw new Error('عنوان پروژه و دست‌کم یک پیج یا تگ وارد کنید.');
+       if (!title.trim()) throw new Error('عنوان پروژه را وارد کنید.');
+       if (!nextTags.length) throw new Error('دست‌کم یک تگ وارد کنید.');
+       if (collectionScope === 'profile_tags') {
+         const nextProfiles = readChips(savedProfiles, profileDraft, 'profile');
+         if (!nextProfiles.length) throw new Error('دست‌کم یک پیج وارد کنید.');
+         setSavedProfiles(nextProfiles);
+         setProfileDraft('');
        }
-       setSavedProfiles(nextProfiles);
-       setProfileDraft('');
        setHashtags(nextTags);
-           setTagDraft('');
+       setTagDraft('');
      } catch (error) {
        setFormError((error as Error).message);
        return;
@@ -242,7 +289,8 @@ export default function Home(){
        method: editingProject ? 'PUT' : 'POST',
        headers: {'Content-Type': 'application/json'},
        body: JSON.stringify({
-         title, companies, hashtags, profiles: savedProfiles, method: 'browser',
+         title, companies, hashtags, method: 'browser', collection_scope: collectionScope,
+         profiles: collectionScope === 'profile_tags' ? savedProfiles : [],
          max_posts: postLimit, max_comments: commentLimit, max_likers: likerLimit,
          likers, sync, refresh_posts: refreshPosts, background,
        }),
@@ -334,6 +382,7 @@ export default function Home(){
  const filteredPosts=posts.filter(p=>[p.caption,p.owner,p.source,p.post_url].some(x=>x?.toLowerCase().includes(query.toLowerCase())));
  const filteredComments=comments.filter(c=>(c.text+' '+c.username).toLowerCase().includes(query.toLowerCase()));
  return <Box sx={{display:'flex',minHeight:'100vh'}}>
+  <DriveFiles open={driveOpen} onClose={() => setDriveOpen(false)}/>
   <Box component="aside" style={{right:0}} sx={{width:240,position:'fixed',top:0,bottom:0,bgcolor:'#102e26',color:'#fff',p:3,display:{xs:'none',md:'flex'},flexDirection:'column'}}>
    <Stack direction="row" spacing={1.5} sx={{alignItems:"center",mb:6}}><Avatar variant="rounded" sx={{bgcolor:'#cbdf91',color:'#183c2d'}}><TravelExplore/></Avatar><Box><Typography variant="h5">دیدبان</Typography><Typography variant="caption" sx={{color:'#9bb4a8'}}>فضای کار پایش بازار</Typography></Box></Stack>
    <Typography variant="caption" sx={{color:'#819c90',mb:2}}>فضای کار شما</Typography>
@@ -344,10 +393,24 @@ export default function Home(){
    <Box component="header" sx={{bgcolor:'white',borderBottom:'1px solid #e5eae6',px:{xs:2,md:5},py:2,display:'flex',alignItems:'center',justifyContent:'space-between'}}><Stack direction="row" spacing={1} sx={{alignItems:"center"}}><Typography sx={{fontWeight:700}}>پایش اینستاگرام</Typography><Chip size="small" label="محلی" variant="outlined"/></Stack><Stack direction="row" spacing={1} sx={{alignItems:"center"}}><Box sx={{width:7,height:7,borderRadius:'50%',bgcolor:error?'error.main':'success.main'}}/><Typography variant="caption">{error?'ارتباط نیاز به بررسی دارد':'فضای کار شخصی'}</Typography><Tooltip title="تازه‌سازی"><IconButton aria-label="تازه‌سازی" onClick={()=>void refresh()}><Refresh/></IconButton></Tooltip></Stack></Box>
    <Container maxWidth="xl" sx={{py:{xs:3,md:5},px:{md:5}}}>
     {error&&<Alert severity="error" sx={{mb:2}}>{error}</Alert>}{notice&&<Alert severity="success" onClose={()=>setNotice('')} sx={{mb:2}}>{notice}</Alert>}
-    <Stack direction={{xs:'column',sm:'row'}} spacing={2} sx={{alignItems:{sm:'center'},justifyContent:"space-between",mb:4}}><Box><Typography variant="overline" color="primary">MARKET INTELLIGENCE</Typography><Typography variant="h4" sx={{mt:.5,mb:1}}>{nav===0?'بازار را از نزدیک ببینید.':'پروژه‌ها و اجراها'}</Typography><Typography color="text.secondary">پست‌ها و گفتگوها را از پیج‌ها و تگ‌ها جمع‌آوری کنید.</Typography></Box><Stack direction={{xs: 'column', sm: 'row'}} spacing={1}>
+    <Stack direction={{xs:'column',sm:'row'}} spacing={2} sx={{alignItems:{sm:'center'},justifyContent:"space-between",mb:4}}><Box><Typography variant="h4" sx={{mt:.5,mb:1}}>{nav===0?'نمای کلی':currentProject?'جزئیات پروژه':'پروژه‌ها و اجراها'}</Typography></Box><Stack direction={{xs: 'column', sm: 'row'}} spacing={1}>
+      <Button variant="outlined" onClick={() => setDriveOpen(true)}>فایل‌های Google Drive</Button>
       <Button variant="outlined" disabled={active} onClick={() => openPostTest()}>آزمون لینک پست</Button>
       <Button variant="contained" startIcon={<Add/>} disabled={active} onClick={() => openProject()}>پروژه جدید</Button>
     </Stack></Stack>
+    <Tabs value={nav} onChange={(_, value) => {setNav(value);setProjectId(null);}} sx={{display: {md: 'none'}, mb: 2}}>
+      <Tab label="نمای کلی" />
+      <Tab label="پروژه‌ها و اجراها" />
+    </Tabs>
+    {nav === 0 ? (
+      <ProjectOverview
+        projects={projects}
+        runs={runs}
+        loading={loading}
+        statuses={labels}
+        onOpen={id => {setProjectId(id);setNav(1);}}
+      />
+    ) : <>
     {currentProject ? (
       <Card sx={{p: 3, mb: 3}}>
         <Stack spacing={2}>
@@ -414,6 +477,7 @@ export default function Home(){
         </TableContainer>
       )}
     </Card>
+    </>}
     <Typography variant="caption" color="text.secondary" sx={{display:'block',mt:3}}>داده‌های قابل دسترسی ممکن است کامل نباشند. جمع‌آوری باید با مجوز و رعایت شرایط استفاده اینستاگرام انجام شود.</Typography>
    </Container>
   </Box>
@@ -456,13 +520,15 @@ export default function Home(){
       </DialogActions>
     </Box>
   </Dialog>
-  <Dialog open={creating} onClose={closeCreate} fullWidth maxWidth="sm" dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6" sx={{fontWeight:700}}>{editingProject ? 'ویرایش پروژه' : 'پروژه جدید'}</Typography><IconButton aria-label="بستن" disabled={busy} onClick={closeCreate}><Close/></IconButton></Stack></DialogTitle><DialogContent><Stepper activeStep={step} alternativeLabel sx={{my:3}}>{['روش جمع‌آوری','پیج‌ها و تگ‌ها','تنظیمات اجرا'].map(x=><Step key={x}><StepLabel>{x}</StepLabel></Step>)}</Stepper>{formError&&<Alert severity="error" sx={{mb:2}}>{formError}</Alert>}
+  <Dialog open={creating} onClose={closeCreate} fullWidth maxWidth="sm" dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6" sx={{fontWeight:700}}>{editingProject ? 'ویرایش پروژه' : 'پروژه جدید'}</Typography><IconButton aria-label="بستن" disabled={busy} onClick={closeCreate}><Close/></IconButton></Stack></DialogTitle><DialogContent><Stepper activeStep={step} alternativeLabel sx={{my:3}}>{['روش جمع‌آوری',collectionScope === 'discover' ? 'تگ‌ها' : 'پیج‌ها و تگ‌ها','تنظیمات اجرا'].map(x=><Step key={x}><StepLabel>{x}</StepLabel></Step>)}</Stepper>{formError&&<Alert severity="error" sx={{mb:2}}>{formError}</Alert>}
    <Stack spacing={2.5} sx={{pt:1}}>{step===0?<>
-     <TextField select label="روش جمع‌آوری" value="browser">
-       <MenuItem value="browser">جمع‌آوری با مرورگر</MenuItem>
-       <MenuItem value="direct" disabled>دریافت مستقیم</MenuItem>
-       <MenuItem value="instagrapi" disabled>دریافت همهٔ هشتگ‌ها با instagrapi</MenuItem>
-       <MenuItem value="instagrapi_probe" disabled>آزمون مستقیم با instagrapi</MenuItem>
+     <TextField select label="روش جمع‌آوری" value={collectionScope}
+       onChange={event => setCollectionScope(event.target.value as CollectionScope)}
+       helperText={collectionScope === 'profile_tags'
+         ? 'در پیج‌های مشخص، پست‌هایی را ثبت می‌کند که کپشنشان دست‌کم یکی از تگ‌ها را دارد.'
+         : 'هر تگ را در جست‌وجوی اینستاگرام بررسی می‌کند.'}>
+       <MenuItem value="profile_tags">آیدی پیج + تگ</MenuItem>
+       <MenuItem value="discover">فقط تگ از دیسکاور</MenuItem>
      </TextField>
      <FormControlLabel
        control={<Switch checked={background} onChange={event => setBackground(event.target.checked)} />}
@@ -480,7 +546,7 @@ export default function Home(){
        onAdd={() => addChip('tag')}
        onRemove={item => setHashtags(hashtags.filter(tag => tag !== item))}
      />
-       <ChipInput
+       {collectionScope === 'profile_tags' && <ChipInput
          label="پیج‌های اینستاگرام"
          hint="نام کاربری پیج شرکت را وارد کنید و Enter بزنید."
          value={profileDraft}
@@ -489,8 +555,8 @@ export default function Home(){
          onChange={setProfileDraft}
          onAdd={() => addChip('profile')}
          onRemove={item => setSavedProfiles(savedProfiles.filter(profile => profile !== item))}
-       />
-   </>:<><TextField label="سقف پست برای هر منبع" type="number" value={postLimit} onChange={e=>setPostLimit(Number(e.target.value))} slotProps={{htmlInput:{min:1,max:100}}}/><TextField label="سقف کامنت برای هر پست" type="number" value={commentLimit} onChange={e=>setCommentLimit(Number(e.target.value))} slotProps={{htmlInput:{min:1,max:5000}}}/>
+       />}
+   </>:<><TextField label={collectionScope === 'discover' ? 'سقف پست برای هر تگ' : 'سقف بررسی پست برای هر پیج'} type="number" value={postLimit} onChange={e=>setPostLimit(Number(e.target.value))} slotProps={{htmlInput:{min:1,max:100}}}/><TextField label="سقف کامنت برای هر پست" type="number" value={commentLimit} onChange={e=>setCommentLimit(Number(e.target.value))} slotProps={{htmlInput:{min:1,max:5000}}}/>
      <Box>
        <FormControlLabel
          control={<Switch checked={likers} onChange={event => setLikers(event.target.checked)} slotProps={{input: {'aria-describedby': 'likers-hint'}}} />}
@@ -518,7 +584,7 @@ export default function Home(){
          پس از اجرای موفق، خروجی‌ها و بکاپ را در پوشهٔ محلیِ تنظیم‌شده برای Google Drive کپی می‌کند.
        </Typography>
      </Box>
-     <Alert severity="info">{background ? 'اجرا در پس‌زمینه. ' : 'اجرا با پنجرهٔ مرورگر. '}{numbers(savedProfiles.length)} پیج و {numbers(hashtags.length)} تگ.</Alert></>}</Stack>
+     <Alert severity="info">{background ? 'اجرا در پس‌زمینه. ' : 'اجرا با پنجرهٔ مرورگر. '}{collectionScope === 'profile_tags' ? `${numbers(savedProfiles.length)} پیج و ` : 'دیسکاور، '}{numbers(hashtags.length)} تگ.</Alert></>}</Stack>
   </DialogContent><DialogActions sx={{p:3}}><Button disabled={busy} onClick={()=>step?setStep(step-1):closeCreate()}>{step?'مرحله قبل':'انصراف'}</Button><Button variant="contained" disabled={busy||active} startIcon={busy?<CircularProgress size={16}/>:step===2?<PlayArrow/>:undefined} onClick={()=>step===2?void start():nextStep()}>{step === 2 ? 'ذخیرهٔ پروژه' : 'ادامه'}</Button></DialogActions></Dialog>
   <Dialog open={!!selected || showProjectData} onClose={()=>{setSelected(null);setShowProjectData(false)}} fullWidth maxWidth="lg" dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6">{showProjectData ? 'داده‌های پروژه' : selectedRun?(configOf(selectedRun).title||configOf(selectedRun).target||'نتایج اجرا'):'نتایج اجرا'}</Typography><IconButton aria-label="بستن نتایج" onClick={()=>{setSelected(null);setShowProjectData(false)}}><Close/></IconButton></Stack></DialogTitle><DialogContent>{selectedRun?.status==='running'&&<LinearProgress sx={{mb:2}}/>}{selectedRun?.status === 'awaiting_code' && (
     <VerificationPrompt key={selectedRun.id} runId={selectedRun.id} onAccepted={refresh} />

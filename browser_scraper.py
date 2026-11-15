@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 from datetime import datetime, timezone
+from unicodedata import normalize
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from playwright.sync_api import Error, TimeoutError, sync_playwright
@@ -16,6 +17,7 @@ from scraper import extract_likers, extract_total_likes, is_logged_in
 
 
 POST_LINKS = 'main a[href*="/p/"], main a[href*="/reel/"], main a[href*="/reels/"]'
+CAPTION_TAG = re.compile(r'(?<![\w\u200c])[#＃]([\w\u200c]+)')
 
 
 def parse_post_url(value):
@@ -45,7 +47,7 @@ def matches_source(url, kind, name):
     return path == '/explore/search/keyword' and query.casefold() == '#' + name.casefold()
 
 
-def find_post_links(page, kind, name, limit, scrolls, check_access=lambda: None):
+def find_post_links(page, kind, name, limit, scrolls, check_access=lambda: None, *, discover=False):
     if kind == 'profile':
         paths = [f'/{quote(name, safe="")}/']
     else:
@@ -53,6 +55,8 @@ def find_post_links(page, kind, name, limit, scrolls, check_access=lambda: None)
             f'/explore/tags/{quote(name, safe="")}/',
             f'/explore/search/keyword/?q={quote("#" + name, safe="")}',
         ]
+        if discover:
+            paths.reverse()
 
     for path in paths:
         response = page.goto(INSTAGRAM_ORIGIN + path, wait_until='domcontentloaded', timeout=40_000)
@@ -308,7 +312,22 @@ def collect_loaded_comments(page, network, limit):
     return comments[:limit], expanded_count, scroll_count, stop_reason, len(visible)
 
 
-def read_post(page, shortcode, url, config, log):
+def normalized_tag(value):
+    return normalize('NFC', value).casefold()
+
+
+def matching_caption(page, network_caption, required_tags):
+    captions = [network_caption] if network_caption is not None else page.evaluate("""() => [
+        ...Array.from(document.querySelectorAll('article h1, main h1, [data-testid="post-caption"]'), node => node.textContent),
+        ...Array.from(document.querySelectorAll('meta[property="og:description"], meta[name="twitter:description"]'), node => node.content),
+    ]""")
+    for caption in captions:
+        if required_tags.intersection(map(normalized_tag, CAPTION_TAG.findall(caption))):
+            return caption
+    return None
+
+
+def read_post(page, shortcode, url, config, log, *, required_tags=None):
     network = PostResponses(shortcode, config['max_comments'])
     page.on('response', network.receive)
     try:
@@ -322,6 +341,11 @@ def read_post(page, shortcode, url, config, log):
         ):
             raise CollectionError('اینستاگرام صفحهٔ پست را باز نکرد.')
         page.wait_for_timeout(1500)
+        if required_tags:
+            caption = matching_caption(page, network.fields.get('caption'), required_tags)
+            if caption is None:
+                return None
+            network.fields.setdefault('caption', caption)
         for _ in range(3):
             check_page_access(page, network)
             network.read_pending_comments()
@@ -451,10 +475,14 @@ def open_instagram_browser(chromium, profile_dir, background, log):
 
 
 def collect_in_browser(config, save, log, known_posts=()):
+    scope = config.get('collection_scope')
     sources = [('profile', name) for name in config['profiles']]
-    sources += [('hashtag', name) for name in config['hashtags']]
-    seen = set()
+    if scope != 'profile_tags':
+        sources += [('hashtag', name) for name in config['hashtags']]
+    required_tags = {normalized_tag(tag) for tag in config['hashtags']} if scope == 'profile_tags' else None
+    saved_any = False
     skipped = set()
+    checked = set()
     unresolved_in_a_row = 0
     profile_dir = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'Didban' / 'instagram-profile'
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -474,23 +502,31 @@ def collect_in_browser(config, save, log, known_posts=()):
                 source_responses = PostResponses('', 0)
                 page.on('response', source_responses.receive)
                 for kind, name in sources:
-                    log(('دریافت پیج: ' if kind == 'profile' else 'دریافت هشتگ: #') + name)
+                    if kind == 'profile':
+                        log(f'بررسی پیج: @{name}')
+                    else:
+                        log(f'جست‌وجوی #{name}' + (' در دیسکاور' if scope == 'discover' else ''))
                     links = find_post_links(
                         page, kind, name, config['max_posts'], config['scrolls'],
                         check_access=lambda: check_page_access(page, source_responses),
+                        discover=scope == 'discover',
                     )
                     check_page_access(page, source_responses)
                     if not links:
                         log('پستی در صفحهٔ این منبع پیدا نشد.')
                     for shortcode, url in links.items():
-                        if shortcode in seen:
+                        if shortcode in checked:
                             continue
+                        checked.add(shortcode)
                         if shortcode in known_posts and not config.get('refresh_posts'):
                             skipped.add(shortcode)
                             continue
-                        row = read_post(post_page, shortcode, url, run_config, log)
+                        row = read_post(post_page, shortcode, url, run_config, log, required_tags=required_tags)
+                        if row is None:
+                            log(f'تگ موردنظر در کپشن قابل‌خواندن پست {shortcode} پیدا نشد.')
+                            continue
                         save({**row, 'source': name, 'source_type': kind})
-                        seen.add(shortcode)
+                        saved_any = True
                         log(f'پست {shortcode} ذخیره شد. {len(row["comments"])} کامنت ثبت شد.')
                         if row['comments'] or row.get('reported_comment_count') == 0:
                             unresolved_in_a_row = 0
@@ -504,5 +540,9 @@ def collect_in_browser(config, save, log, known_posts=()):
         raise CollectionError('مرورگر نتوانست صفحهٔ اینستاگرام را باز یا پردازش کند.') from None
     if skipped:
         log(f'{len(skipped)} پست قبلاً ثبت شده بود و دوباره باز نشد.')
-    if not seen and not skipped:
+    if not saved_any and not skipped:
+        if scope == 'profile_tags':
+            raise CollectionError('در پست‌های بررسی‌شدهٔ پیج‌ها، کپشنی با تگ‌های واردشده پیدا نشد.')
+        if scope == 'discover':
+            raise CollectionError('دیسکاور برای تگ‌های واردشده پستی نشان نداد.')
         raise CollectionError('پستی در صفحات پیج یا هشتگ پیدا نشد. همان منابع را در اینستاگرام بررسی کنید.')

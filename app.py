@@ -16,7 +16,8 @@ import re
 from project_store import initialize_projects, now, store_post
 from browser_scraper import collect_in_browser, parse_post_url
 ROOT=Path(__file__).resolve().parent
-DATA=ROOT/'data'; DATA.mkdir(exist_ok=True)
+DATA=Path(os.environ.get('DIDBAN_DATA_DIR') or ROOT/'data')
+DATA.mkdir(parents=True, exist_ok=True)
 DB=DATA/'project.sqlite'
 @contextmanager
 def db():
@@ -50,6 +51,7 @@ class Config(BaseModel):
     companies: list[str] = Field(default_factory=list, max_length=20)
     profiles:list[str]=Field(default_factory=list,max_length=20)
     hashtags:list[str]=Field(default_factory=list,max_length=20)
+    collection_scope: Literal['profile_tags', 'discover'] | None = None
     probe_hashtag: str | None = None
     post_url: str | None = Field(default=None, max_length=2048)
 
@@ -62,6 +64,8 @@ class Config(BaseModel):
 
     @model_validator(mode='after')
     def validate_sources(self):
+        if self.collection_scope and (self.method != 'browser' or self.post_url):
+            raise ValueError('حالت جست‌وجو فقط برای جمع‌آوری پروژه با مرورگر است')
         if self.post_url is not None:
             if self.method != 'browser' or self.profiles or self.hashtags or self.target:
                 raise ValueError('آزمون لینک فقط با یک پست و روش مرورگر انجام می‌شود')
@@ -75,6 +79,10 @@ class Config(BaseModel):
         self.hashtags=list(dict.fromkeys(x.strip().lstrip('#') for x in self.hashtags if x.strip()))
         if self.target and self.target not in self.profiles:self.profiles.insert(0,self.target)
         if len(self.profiles)>20:raise ValueError('حداکثر ۲۰ پیج مجاز است')
+        if self.collection_scope == 'profile_tags' and not (self.profiles and self.hashtags):
+            raise ValueError('برای جست‌وجو در پیج‌ها، دست‌کم یک پیج و یک تگ وارد کنید')
+        if self.collection_scope == 'discover' and (self.profiles or not self.hashtags):
+            raise ValueError('برای دیسکاور، دست‌کم یک تگ وارد کنید')
         if not self.profiles and not self.hashtags:raise ValueError('حداقل یک پیج یا هشتگ وارد کنید')
         if self.method == 'instagrapi_probe':
             if self.probe_hashtag is None and len(self.hashtags) == 1:
@@ -109,7 +117,7 @@ async def local_only(request:Request,call_next):
     if request.headers.get('host','').split(':')[0] not in ('127.0.0.1','localhost'):
         return Response(status_code=403)
     origin=request.headers.get('origin')
-    if origin and origin not in ('http://127.0.0.1:8000','http://localhost:8000','http://127.0.0.1:3000','http://localhost:3000'):
+    if origin and origin not in ('http://127.0.0.1:8000','http://localhost:8000','http://127.0.0.1:3000','http://localhost:3000',os.environ.get('DIDBAN_LOCAL_ORIGIN')):
         return Response(status_code=403)
     return await call_next(request)
 def log(r,msg):
@@ -258,7 +266,7 @@ def worker(r,cfg,credentials=None,project_id=None):
             try:
                 dest=os.environ.get('DRIVE_OUTPUT_DIR')
                 if not dest:raise ValueError()
-                folder=Path(dest)/'Marketing Intelligence'/r;folder.mkdir(parents=True,exist_ok=True)
+                folder=Path(dest)/'Marketing Intelligence'/(project_id or 'اجراهای مستقل')/r;folder.mkdir(parents=True,exist_ok=True)
                 for ext in ['csv','xlsx']:shutil.copy2(export(r,ext),folder)
                 backup=DATA/(r+'.sqlite')
                 with db() as source,sqlite3.connect(backup) as target:source.backup(target)
@@ -276,6 +284,67 @@ def worker(r,cfg,credentials=None,project_id=None):
         lock.release()
 @app.get('/',response_class=HTMLResponse)
 def index():return RedirectResponse('http://127.0.0.1:3000')
+class DriveFileChange(BaseModel):
+    path: str
+    name: str | None = None
+
+
+def drive_root():
+    dest = os.environ.get('DRIVE_OUTPUT_DIR')
+    if not dest:
+        raise HTTPException(503, 'مسیر Google Drive تنظیم نشده است.')
+    root = Path(dest) / 'Marketing Intelligence'
+    if not Path(dest).is_dir():
+        raise HTTPException(503, 'پوشه Google Drive در دسترس نیست.')
+    return root
+
+
+def drive_file(relative):
+    root = drive_root().resolve()
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root) or not path.is_file() or path.suffix.lower() not in ('.csv', '.xlsx', '.sqlite'):
+        raise HTTPException(404, 'فایل پیدا نشد.')
+    return path
+
+
+@app.get('/api/drive/files')
+def list_drive_files():
+    root = drive_root()
+    if not root.exists():
+        return []
+    files = []
+    for path in root.rglob('*'):
+        if path.is_file() and not path.is_symlink() and path.suffix.lower() in ('.csv', '.xlsx', '.sqlite') and path.resolve().is_relative_to(root.resolve()):
+            stat = path.stat()
+            files.append({'path': path.relative_to(root).as_posix(), 'name': path.name, 'size': stat.st_size, 'modified': datetime.fromtimestamp(stat.st_mtime, ZoneInfo('Asia/Tehran')).isoformat()})
+    return sorted(files, key=lambda item: item['modified'], reverse=True)
+
+
+@app.patch('/api/drive/files')
+def rename_drive_file(change: DriveFileChange):
+    path = drive_file(change.path)
+    name = (change.name or '').strip()
+    if not name or name in ('.', '..') or re.search(r'[<>:"/\\|?*\x00-\x1f]', name) or name.endswith(('.', ' ')) or Path(name).suffix.lower() != path.suffix.lower() or re.match(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)', name, re.I):
+        raise HTTPException(400, 'نام معتبر با پسوند اصلی فایل وارد کنید.')
+    target = path.with_name(name)
+    if target != path and target.exists():
+        raise HTTPException(409, 'فایلی با این نام وجود دارد.')
+    try:
+        path.rename(target)
+    except OSError:
+        raise HTTPException(400, 'تغییر نام فایل ممکن نشد.')
+    return {'ok': True}
+
+
+@app.delete('/api/drive/files')
+def delete_drive_file(change: DriveFileChange):
+    path = drive_file(change.path)
+    try:
+        path.unlink()
+    except OSError:
+        raise HTTPException(400, 'حذف فایل ممکن نشد.')
+    return {'ok': True}
+
 @app.get('/api/runs')
 def runs():
     with db() as c:
@@ -372,7 +441,18 @@ def get_project(project_id):
 @app.get('/api/projects')
 def list_projects():
     with db() as c:
-        return [dict(row) for row in c.execute('SELECT * FROM projects ORDER BY updated_at DESC')]
+        return [dict(row) for row in c.execute("""
+            SELECT projects.*,
+                   COALESCE(stats.posts_count, 0) AS posts_count,
+                   COALESCE(stats.comments_count, 0) AS comments_count
+            FROM projects
+            LEFT JOIN (
+                SELECT project_id, COUNT(*) AS posts_count,
+                       SUM(json_array_length(payload, '$.comments')) AS comments_count
+                FROM project_posts GROUP BY project_id
+            ) AS stats ON stats.project_id = projects.id
+            ORDER BY projects.updated_at DESC
+        """)]
 
 
 def project_config(cfg):
