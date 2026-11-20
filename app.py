@@ -13,7 +13,10 @@ from unicodedata import decimal
 from direct_scraper import collect_direct,CollectionError
 from openpyxl import Workbook
 import re
-from project_store import initialize_projects, now, store_post
+from project_store import (
+    completed_post_keys, delete_project_data, delete_run_data, initialize_projects, now,
+    project_posts, run_counts, run_posts, save_post,
+)
 from analytics import project_analytics
 from browser_scraper import collect_in_browser, parse_post_url
 ROOT=Path(__file__).resolve().parent
@@ -29,7 +32,6 @@ def db():
 with db() as c:
     c.execute('BEGIN IMMEDIATE')
     c.execute('CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, config TEXT,status TEXT,logs TEXT)')
-    c.execute('CREATE TABLE IF NOT EXISTS results(run TEXT,payload TEXT)')
     initialize_projects(c)
     c.execute("UPDATE runs SET status='interrupted' WHERE status IN ('running', 'awaiting_code', 'awaiting_security')")
 app=FastAPI()
@@ -163,26 +165,21 @@ def recover_instagram_login(run_id, username, loader):
 def save(r, row):
     with db() as c:
         project_id = c.execute('SELECT project_id FROM runs WHERE id=?', (r,)).fetchone()[0]
-        if project_id:
-            row = store_post(c, project_id, row)
-        if row:
-            c.execute('INSERT INTO results VALUES (?,?)', (r, json.dumps(row, ensure_ascii=False)))
+        save_post(c, r, project_id, row)
 
 def rows(r):
     with db() as c:
-        return [json.loads(x[0]) for x in c.execute('SELECT payload FROM results WHERE run=?', (r,))]
+        return run_posts(c, r)
 
 def project_rows(project_id):
     with db() as c:
-        return [json.loads(x[0]) for x in c.execute(
-            'SELECT payload FROM project_posts WHERE project_id=? ORDER BY rowid DESC', (project_id,),
-        )]
+        return project_posts(c, project_id)
 
 def previously_collected_posts(project_id):
     if not project_id:
         return set()
-    return {post['shortcode'] for post in project_rows(project_id)
-            if post.get('comments') or post.get('reported_comment_count') == 0}
+    with db() as c:
+        return completed_post_keys(c, project_id)
 
 def export(r, ext):
     return export_records(rows(r), DATA / (r + '.' + ext), ext)
@@ -350,10 +347,9 @@ def delete_drive_file(change: DriveFileChange):
 def runs():
     with db() as c:
         items=[dict(x) for x in c.execute('SELECT * FROM runs ORDER BY rowid DESC')]
+        counts=run_counts(c)
     for item in items:
-        records=rows(item['id'])
-        item['posts_count']=sum(row.get('new_post', True) for row in records)
-        item['comments_count']=sum(len(x.get('comments',[])) for x in records)
+        item.update(counts.get(item['id'], {'posts_count': 0, 'comments_count': 0}))
     return items
 @app.post('/api/runs')
 def start(cfg:Config):
@@ -414,7 +410,7 @@ def clear_results(r:str):
         with db() as c:
             if not c.execute('SELECT 1 FROM runs WHERE id=?',(r,)).fetchone():
                 raise HTTPException(404,'اجرا پیدا نشد')
-            c.execute('DELETE FROM results WHERE run=?',(r,))
+            delete_run_data(c,r)
             c.execute('DELETE FROM runs WHERE id=?',(r,))
         for ext in ('csv','xlsx'):
             (DATA/(r+'.'+ext)).unlink(missing_ok=True)
@@ -448,9 +444,10 @@ def list_projects():
                    COALESCE(stats.comments_count, 0) AS comments_count
             FROM projects
             LEFT JOIN (
-                SELECT project_id, COUNT(*) AS posts_count,
-                       SUM(json_array_length(payload, '$.comments')) AS comments_count
-                FROM project_posts GROUP BY project_id
+                SELECT posts.project_id, COUNT(DISTINCT posts.id) AS posts_count,
+                       COUNT(comments.id) AS comments_count
+                FROM posts LEFT JOIN comments ON comments.post_id = posts.id
+                WHERE posts.project_id IS NOT NULL GROUP BY posts.project_id
             ) AS stats ON stats.project_id = projects.id
             ORDER BY projects.updated_at DESC
         """)]
@@ -519,9 +516,8 @@ def delete_project(project_id: str):
         get_project(project_id)
         with db() as c:
             run_ids = [row[0] for row in c.execute('SELECT id FROM runs WHERE project_id=?', (project_id,))]
-            c.execute('DELETE FROM results WHERE run IN (SELECT id FROM runs WHERE project_id=?)', (project_id,))
+            delete_project_data(c, project_id)
             c.execute('DELETE FROM runs WHERE project_id=?', (project_id,))
-            c.execute('DELETE FROM project_posts WHERE project_id=?', (project_id,))
             c.execute('DELETE FROM projects WHERE id=?', (project_id,))
         for name in [*run_ids, f'project-{project_id}']:
             if re.fullmatch(r'(?:project-)?[a-f0-9]{32}', name):

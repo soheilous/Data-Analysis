@@ -1,7 +1,9 @@
 """Offline tests for project metrics."""
+import sqlite3
 import unittest
 
 from analytics import hashtags, number, project_analytics
+from project_store import initialize_projects, project_posts, save_post
 
 
 def post(code, likes, published, caption='', comments=(), owner='brand', reported=None):
@@ -61,6 +63,21 @@ class AnalyticsTest(unittest.TestCase):
         self.assertEqual(result['comments']['top_commenters'][0], {'username': 'ali', 'comments': 2})
         self.assertEqual(result['comments']['top_terms'][0], {'term': 'great', 'count': 2})
         self.assertEqual(result['accounts'][0]['owner'], 'rival')
+
+    def test_reads_normalized_storage(self):
+        connection = sqlite3.connect(':memory:')
+        connection.execute('CREATE TABLE runs(id TEXT PRIMARY KEY, config TEXT,status TEXT,logs TEXT)')
+        initialize_projects(connection)
+        project = 'a' * 32
+        connection.execute("INSERT INTO runs(id,config,status,logs,project_id) VALUES ('r','{}','completed','',?)", (project,))
+        save_post(connection, 'r', project, post('A', '1.2K', '2026-11-01T10:00:00+00:00', '#coffee', [('ali', 'nice')], reported=5))
+        save_post(connection, 'r', project, post('B', 30, '2026-11-02T10:00:00+00:00', '#coffee #tea', [('ali', 'nice one')]))
+        result = project_analytics(project_posts(connection, project))
+        self.assertEqual(result['summary']['posts'], 2)
+        self.assertEqual(result['summary']['total_likes'], 1230)
+        self.assertEqual(result['summary']['total_comments'], 6)
+        self.assertEqual(result['hashtags']['top'][0]['tag'], 'coffee')
+        self.assertEqual(result['comments']['top_commenters'], [{'username': 'ali', 'comments': 2}])
 
 
 if __name__ == '__main__':
