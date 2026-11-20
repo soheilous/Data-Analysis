@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8"><title>Instagram post</title>
+  <meta property="og:description" content="1,532 likes, 3 comments - example_brand on November 1, 2026: &quot;معرفی محصول جدید #اسنوا #didban&quot;.">
+</head>
+<body>
+  <main>
+    <article>
+      <header><a href="/example_brand/">example_brand</a></header>
+      <h1>معرفی محصول جدید #اسنوا #didban</h1>
+      <ul>
+        <li><div data-testid="comment">
+          <a href="/first_fan/">first_fan</a>
+          <span>عالیه 👏</span>
+          <a href="/p/DidbanTest1/c/18000000000000001/"><time datetime="2026-11-01T10:30:00.000Z">1h</time></a>
+          <button>Reply</button>
+        </div></li>
+        <li><div data-testid="comment">
+          <a href="/dom_only/">dom_only</a>
+          <span>Only rendered in the page</span>
+          <time datetime="2026-11-01T12:00:00.000Z">5m</time>
+          <button>Reply</button>
+        </div></li>
+      </ul>
+    </article>
+  </main>
+  <script>
+    // Replays the request the real post page makes after load.
+    fetch('/graphql/query', {
+      method: 'POST',
+      headers: {'content-type': 'application/x-www-form-urlencoded'},
+      body: 'av=0&doc_id=8845758582119845&variables=%7B%22shortcode%22%3A%22DidbanTest1%22%2C%22fetch_tagged_user_count%22%3Anull%7D',
+    });
+  </script>
+</body></html>

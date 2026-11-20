@@ -1,0 +1,36 @@
+{
+  "description": "GraphQL comment pagination delivered with the for(;;); guard and newline-separated JSON, plus a page for another post that must be ignored.",
+  "shortcode": "DidbanTest1",
+  "exchanges": [
+    {
+      "method": "POST",
+      "url": "https://www.instagram.com/graphql/query",
+      "resource_type": "fetch",
+      "status": 200,
+      "headers": {"content-type": "application/json; charset=utf-8"},
+      "post_data": "doc_id=1&variables=%7B%22media_id%22%3A%224079537413632478069%22%2C%22first%22%3A10%7D",
+      "body": "for (;;);{\"data\":{\"xdt_api__v1__media__media_id__comments__connection\":{\"edges\":[{\"node\":{\"pk\":\"18000000000000021\",\"text\":\"first page\",\"created_at\":1793529000,\"comment_like_count\":2,\"user\":{\"username\":\"stream_one\"}}}],\"page_info\":{\"has_next_page\":true}}}}\n{\"data\":{\"xdt_api__v1__media__media_id__comments__connection\":{\"edges\":[{\"node\":{\"pk\":\"18000000000000022\",\"text\":\"streamed later\",\"created_at\":1793529100,\"user\":{\"username\":\"stream_two\"}}}]}},\"is_final\":true}\nnot json"
+    },
+    {
+      "method": "POST",
+      "url": "https://www.instagram.com/graphql/query",
+      "resource_type": "fetch",
+      "status": 200,
+      "headers": {"content-type": "application/json"},
+      "post_data": "doc_id=2&variables=%7B%22parent_comment_id%22%3A%2218000000000000021%22%7D",
+      "body": {"data": {"xdt_api__v1__media__media_id__comments__parent_comment_id__child_comments__connection": {
+        "edges": [{"node": {"pk": "18000000000000023", "text": "reply via parent id", "created_at": 1793529200,
+                            "user": {"username": "stream_three"}}}]}}}
+    },
+    {
+      "method": "POST",
+      "url": "https://www.instagram.com/graphql/query",
+      "resource_type": "fetch",
+      "status": 200,
+      "headers": {"content-type": "application/json"},
+      "post_data": "doc_id=1&variables=%7B%22media_id%22%3A%22555%22%7D",
+      "body": {"data": {"xdt_api__v1__media__media_id__comments__connection": {
+        "edges": [{"node": {"pk": "18000000000000098", "text": "other post", "user": {"username": "elsewhere"}}}]}}}
+    }
+  ]
+}

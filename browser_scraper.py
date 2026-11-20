@@ -208,6 +208,16 @@ def visible_comments(page, limit, *, diagnostics=False):
     }""", {'limit': limit, 'diagnostics': diagnostics})
 
 
+def same_time(first, second):
+    """Compare comment times; network uses +00:00 and page time elements use Z with milliseconds."""
+    if not first or not second:
+        return True
+    try:
+        return datetime.fromisoformat(first) == datetime.fromisoformat(second)
+    except (TypeError, ValueError):
+        return first == second
+
+
 def collect_loaded_comments(page, network, limit):
     visible = {}
     opened_replies = []
@@ -303,7 +313,7 @@ def collect_loaded_comments(page, network, limit):
                  or candidate['comment_id'] == comment['comment_id'])
                 and candidate['username'].casefold() == comment['username'].casefold()
                 and candidate['text'].strip() == comment['text'].strip()
-                and (not candidate['time'] or not comment['time'] or candidate['time'] == comment['time'])
+                and same_time(candidate['time'], comment['time'])
             ):
                 unmatched.pop(index)
                 break

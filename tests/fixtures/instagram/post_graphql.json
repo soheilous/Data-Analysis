@@ -1,0 +1,56 @@
+{
+  "description": "Post page load: GraphQL post query with caption, likes, top-level comments and a threaded reply.",
+  "shortcode": "DidbanTest1",
+  "exchanges": [
+    {
+      "method": "POST",
+      "url": "https://www.instagram.com/graphql/query",
+      "resource_type": "fetch",
+      "status": 200,
+      "headers": {"content-type": "application/json; charset=utf-8"},
+      "post_data": "av=0&doc_id=8845758582119845&variables=%7B%22shortcode%22%3A%22DidbanTest1%22%2C%22fetch_tagged_user_count%22%3Anull%7D",
+      "body": {
+        "data": {
+          "xdt_shortcode_media": {
+            "__typename": "XDTGraphVideo",
+            "id": "4079537413632478069",
+            "shortcode": "DidbanTest1",
+            "taken_at_timestamp": 1793525400,
+            "owner": {"id": "1001", "username": "example_brand"},
+            "edge_media_to_caption": {"edges": [{"node": {"text": "معرفی محصول جدید #اسنوا #didban"}}]},
+            "edge_media_preview_like": {"count": 1532, "edges": []},
+            "edge_media_to_parent_comment": {
+              "count": 3,
+              "page_info": {"has_next_page": false, "end_cursor": null},
+              "edges": [
+                {"node": {
+                  "id": "18000000000000001",
+                  "text": "عالیه 👏",
+                  "created_at": 1793529000,
+                  "owner": {"id": "2001", "username": "first_fan"},
+                  "edge_liked_by": {"count": 4},
+                  "edge_threaded_comments": {"count": 1, "edges": [
+                    {"node": {
+                      "id": "18000000000000002",
+                      "text": "@first_fan ممنون از شما",
+                      "created_at": 1793530000,
+                      "owner": {"id": "1001", "username": "example_brand"}
+                    }}
+                  ]}
+                }},
+                {"node": {
+                  "id": "18000000000000003",
+                  "text": "Price?",
+                  "created_at": 1793531000,
+                  "owner": {"id": "2002", "username": "second.fan"}
+                }}
+              ]
+            }
+          }
+        },
+        "extensions": {"is_final": true},
+        "status": "ok"
+      }
+    }
+  ]
+}

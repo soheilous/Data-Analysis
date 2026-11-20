@@ -1,0 +1,14 @@
+{
+  "description": "Responses that mean Instagram limited or challenged the session.",
+  "exchanges": [
+    {"name": "rate_limited", "method": "GET", "url": "https://www.instagram.com/api/v1/media/4079537413632478069/info/",
+     "resource_type": "xhr", "status": 429, "headers": {"content-type": "application/json"},
+     "body": {"message": "Please wait a few minutes before you try again.", "status": "fail"}},
+    {"name": "checkpoint", "method": "POST", "url": "https://www.instagram.com/graphql/query",
+     "resource_type": "fetch", "status": 400, "headers": {"content-type": "application/json"}, "post_data": "doc_id=1",
+     "body": {"message": "checkpoint_required", "checkpoint_url": "/challenge/REDACTED/", "status": "fail"}},
+    {"name": "login_required", "method": "GET", "url": "https://i.instagram.com/api/v1/media/4079537413632478069/comments/",
+     "resource_type": "xhr", "status": 200, "headers": {"content-type": "application/json"},
+     "body": {"message": "login_required", "status": "fail"}}
+  ]
+}

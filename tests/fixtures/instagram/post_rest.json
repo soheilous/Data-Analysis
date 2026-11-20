@@ -1,0 +1,59 @@
+{
+  "description": "REST endpoints: comments arrive before media info, plus a comments page for an unrelated post.",
+  "shortcode": "DidbanTest1",
+  "exchanges": [
+    {
+      "method": "GET",
+      "url": "https://www.instagram.com/api/v1/media/4079537413632478069/comments/?can_support_threading=true&permalink_enabled=false",
+      "resource_type": "xhr",
+      "status": 200,
+      "headers": {"content-type": "application/json; charset=utf-8"},
+      "body": {
+        "comments": [
+          {"pk": "18000000000000011", "text": "خیلی خوبه", "created_at": 1793529000,
+           "comment_like_count": 7, "user": {"pk": "3001", "username": "rest_user"},
+           "preview_child_comments": [
+             {"pk": "18000000000000012", "text": "موافقم", "created_at": 1793529500,
+              "comment_like_count": 0, "user": {"pk": "3002", "username": "reply_user"}}
+           ]},
+          {"pk": "18000000000000013", "text": "ارسال دارید؟", "created_at": 1793529600,
+           "comment_like_count": 1, "user": {"pk": "3003", "username": "asker"}}
+        ],
+        "comment_count": 3,
+        "has_more_comments": false,
+        "status": "ok"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://www.instagram.com/api/v1/media/555/comments/?can_support_threading=true",
+      "resource_type": "xhr",
+      "status": 200,
+      "headers": {"content-type": "application/json; charset=utf-8"},
+      "body": {
+        "comments": [
+          {"pk": "18000000000000099", "text": "comment on another post", "created_at": 1793529000,
+           "user": {"pk": "3999", "username": "elsewhere"}}
+        ],
+        "status": "ok"
+      }
+    },
+    {
+      "method": "GET",
+      "url": "https://www.instagram.com/api/v1/media/4079537413632478069/info/",
+      "resource_type": "xhr",
+      "status": 200,
+      "headers": {"content-type": "application/json; charset=utf-8"},
+      "body": {
+        "items": [
+          {"pk": "4079537413632478069", "id": "4079537413632478069_1001", "code": "DidbanTest1",
+           "taken_at": 1793525400, "like_count": 980, "comment_count": 3,
+           "user": {"pk": "1001", "username": "example_brand"},
+           "caption": {"pk": "17900000000000001", "text": "کپشن از REST #اسنوا"}}
+        ],
+        "num_results": 1,
+        "status": "ok"
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "description": "Responses the parser must skip: they all contain a matching post but are not API JSON.",
+  "exchanges": [
+    {"name": "other_host", "method": "GET", "url": "https://graph.example.com/api/v1/media/1/info/",
+     "resource_type": "xhr", "status": 200, "headers": {"content-type": "application/json"},
+     "body": {"items": [{"code": "DidbanTest1", "like_count": 1}]}},
+    {"name": "document", "method": "GET", "url": "https://www.instagram.com/api/v1/media/1/info/",
+     "resource_type": "document", "status": 200, "headers": {"content-type": "application/json"},
+     "body": {"items": [{"code": "DidbanTest1", "like_count": 2}]}},
+    {"name": "not_api_path", "method": "GET", "url": "https://www.instagram.com/p/DidbanTest1/?__a=1",
+     "resource_type": "fetch", "status": 200, "headers": {"content-type": "application/json"},
+     "body": {"items": [{"code": "DidbanTest1", "like_count": 3}]}},
+    {"name": "html", "method": "GET", "url": "https://www.instagram.com/api/v1/media/1/info/",
+     "resource_type": "fetch", "status": 200, "headers": {"content-type": "text/html"},
+     "body": "<html>{\"items\": []}</html>"},
+    {"name": "server_error", "method": "GET", "url": "https://www.instagram.com/api/v1/media/1/info/",
+     "resource_type": "fetch", "status": 500, "headers": {"content-type": "application/json"},
+     "body": {"items": [{"code": "DidbanTest1", "like_count": 5}]}},
+    {"name": "client_error", "method": "GET", "url": "https://www.instagram.com/api/v1/media/1/info/",
+     "resource_type": "fetch", "status": 404, "headers": {"content-type": "application/json"},
+     "body": {"items": [{"code": "DidbanTest1", "like_count": 6}]}}
+  ]
+}
