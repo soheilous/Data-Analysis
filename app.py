@@ -14,6 +14,7 @@ from direct_scraper import collect_direct,CollectionError
 from openpyxl import Workbook
 import re
 from project_store import initialize_projects, now, store_post
+from analytics import project_analytics
 from browser_scraper import collect_in_browser, parse_post_url
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('DIDBAN_DATA_DIR') or ROOT/'data')
@@ -490,6 +491,12 @@ def run_project(project_id: str):
 def get_project_results(project_id: str):
     get_project(project_id)
     return project_rows(project_id)
+
+
+@app.get('/api/projects/{project_id}/analytics')
+def get_project_analytics(project_id: str):
+    get_project(project_id)
+    return project_analytics(project_rows(project_id))
 
 
 @app.get('/api/projects/{project_id}/export/{ext}')
