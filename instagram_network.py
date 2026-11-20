@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 from playwright.sync_api import Error
 
 from direct_scraper import CollectionError
+from safety import AccountRestricted
 
 
 def timestamp(value):
@@ -36,6 +37,7 @@ class PostResponses:
         self.comments = {}
         self.comment_payloads = []
         self.blocked = False
+        self.block_kind = None
         self.json_responses = 0
         self.comment_responses = 0
 
@@ -49,6 +51,8 @@ class PostResponses:
             return
         if response.status in (401, 403, 429):
             self.blocked = True
+            if response.status != 401:
+                self.block_kind = 'rate_limit'
             return
         if response.status >= 500 or 'json' not in response.headers.get('content-type', ''):
             return
@@ -74,6 +78,10 @@ class PostResponses:
         message = payload.get('message')
         if message in ('feedback_required', 'checkpoint_required', 'challenge_required', 'login_required'):
             self.blocked = True
+            self.block_kind = {
+                'feedback_required': 'feedback', 'checkpoint_required': 'challenge',
+                'challenge_required': 'challenge',
+            }.get(message, self.block_kind)
             return
         if response.status >= 400:
             return
@@ -212,4 +220,7 @@ class PostResponses:
 
     def check_access(self):
         if self.blocked:
-            raise CollectionError('اینستاگرام دسترسی را محدود کرد یا تأیید خواست. اجرا متوقف شد.')
+            message = 'اینستاگرام دسترسی را محدود کرد یا تأیید خواست. اجرا متوقف شد.'
+            if self.block_kind:
+                raise AccountRestricted(message, self.block_kind)
+            raise CollectionError(message)

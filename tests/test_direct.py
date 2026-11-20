@@ -1,5 +1,7 @@
 """Offline collector tests. No Instagram account or network access is used."""
+import os
 import sys
+import tempfile
 import types
 import unittest
 from datetime import datetime,timezone
@@ -34,6 +36,9 @@ class Post:
 
 class DirectCollectorTests(unittest.TestCase):
     def setUp(self):
+        state=tempfile.TemporaryDirectory();self.addCleanup(state.cleanup)
+        env=patch.dict(os.environ,{'DIDBAN_STATE_DIR':state.name,'DIDBAN_PAUSE_SCALE':'0'})
+        env.start();self.addCleanup(env.stop)
         Loader.fail=False;Loader.two_factor=False;Post.calls=0
         self.config={'profiles':['example'],'hashtags':['پوست'],'max_posts':2,'max_comments':2,'max_likers':2,'likers':False}
         self.auth={'username':'test','password':'TEST_SECRET_MARKER','code':''}
@@ -41,6 +46,7 @@ class DirectCollectorTests(unittest.TestCase):
         profile=types.SimpleNamespace(get_posts=lambda:iter([Post()]))
         hashtag=types.SimpleNamespace(get_posts_resumable=lambda:iter([Post()]))
         module=types.ModuleType('instaloader');module.Instaloader=Loader
+        module.RateController=type('RateController',(),{'__init__':lambda self,context:None})
         module.Profile=types.SimpleNamespace(from_username=lambda *args:profile)
         module.Hashtag=types.SimpleNamespace(from_name=lambda *args:hashtag)
         module.exceptions=exceptions

@@ -1,5 +1,8 @@
 """Offline tests for instagram_network.PostResponses using recorded response fixtures."""
 
+import os
+os.environ.setdefault('DIDBAN_PAUSE_SCALE', '0')  # no human-scale waits in tests
+
 import unittest
 
 from playwright.sync_api import Error

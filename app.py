@@ -19,6 +19,7 @@ from project_store import (
 )
 from analytics import project_analytics
 from browser_scraper import collect_in_browser, parse_post_url
+from safety import session_path
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('DIDBAN_DATA_DIR') or ROOT/'data')
 DATA.mkdir(parents=True, exist_ok=True)
@@ -47,6 +48,8 @@ pending_verification: dict[str, tuple[str, str | None]] = {}
 
 class VerificationCode(BaseModel):
     code: SecretStr
+
+MAX_POSTS, MAX_SCROLLS, MAX_COMMENTS, MAX_LIKERS = 50, 10, 500, 200
 
 class Config(BaseModel):
     title:str=Field(default='پروژه جدید',min_length=1,max_length=100)
@@ -102,16 +105,25 @@ class Config(BaseModel):
         if any(not re.fullmatch(r'[\w\u200c]{1,100}',x) for x in self.hashtags):raise ValueError('هشتگ نامعتبر است')
         if not self.target and self.profiles:self.target=self.profiles[0]
         return self
-    max_posts:int=Field(default=8,ge=1,le=100)
-    scrolls:int=Field(default=3,ge=1,le=30)
+    # Upper bounds keep one run at the scale of a person reading a few pages.
+    # Older saved projects with higher values are lowered, not rejected.
+    max_posts:int=Field(default=8,ge=1,le=MAX_POSTS)
+    scrolls:int=Field(default=3,ge=1,le=MAX_SCROLLS)
     refresh_posts: bool = False
     background: bool = False
     likers:bool=False
     demo:bool=False
     sync:bool=False
     method:Literal['direct','browser','instagrapi_probe','instagrapi']='direct'
-    max_comments:int=Field(default=100,ge=1,le=5000)
-    max_likers:int=Field(default=100,ge=1,le=5000)
+    max_comments:int=Field(default=100,ge=1,le=MAX_COMMENTS)
+    max_likers:int=Field(default=50,ge=1,le=MAX_LIKERS)
+
+    @field_validator('max_posts', 'scrolls', 'max_comments', 'max_likers', mode='before')
+    @classmethod
+    def lower_to_safe_limit(cls, value, info):
+        ceiling = {'max_posts': MAX_POSTS, 'scrolls': MAX_SCROLLS,
+                   'max_comments': MAX_COMMENTS, 'max_likers': MAX_LIKERS}[info.field_name]
+        return min(value, ceiling) if isinstance(value, int) and not isinstance(value, bool) else value
     login_username:str=Field(default='',exclude=True,repr=False)
     login_password:SecretStr=Field(default=SecretStr(''),exclude=True)
     verification_code:SecretStr=Field(default=SecretStr(''),exclude=True)
@@ -231,6 +243,8 @@ def worker(r,cfg,credentials=None,project_id=None):
         )
 
     try:
+        # Posts already stored for this project are not fetched again.
+        known_posts = previously_collected_posts(project_id) if not (cfg['refresh_posts'] or cfg['post_url']) else set()
         if cfg['demo']:
             save(r,{'post_url':'https://www.instagram.com/p/DEMO/','total_likes':'12','comments':[{'username':'demo','text':'داده آزمایشی'}],'likers':['demo']})
             log(r,'داده نمایشی ذخیره شد')
@@ -239,6 +253,7 @@ def worker(r,cfg,credentials=None,project_id=None):
                 cfg, credentials, lambda row: save(r, row), lambda msg: log(r, msg),
                 request_code=request_code,
                 recover_login=lambda username, loader: recover_instagram_login(r, username, loader),
+                known_posts=known_posts,
             )
         elif cfg['method'] == 'instagrapi_probe':
             from check_direct_access import probe_hashtag
@@ -252,12 +267,11 @@ def worker(r,cfg,credentials=None,project_id=None):
             collect_hashtags(
                 cfg['hashtags'], credentials, request_code,
                 lambda msg: log(r, msg), lambda row: save(r, row),
-                max_posts=cfg['max_posts'], max_comments=cfg['max_comments'],
+                max_posts=cfg['max_posts'], max_comments=cfg['max_comments'], known_posts=known_posts,
             )
         else:
             collect_in_browser(
-                cfg, lambda row: save(r, row), lambda msg: log(r, msg),
-                known_posts=previously_collected_posts(project_id) if not (cfg['refresh_posts'] or cfg['post_url']) else (),
+                cfg, lambda row: save(r, row), lambda msg: log(r, msg), known_posts=known_posts,
             )
         with db() as c:c.execute("UPDATE runs SET status='completed' WHERE id=?",(r,))
         if cfg['sync']:
@@ -351,12 +365,19 @@ def runs():
     for item in items:
         item.update(counts.get(item['id'], {'posts_count': 0, 'comments_count': 0}))
     return items
+def has_saved_session(method, username):
+    library = 'instaloader' if method == 'direct' else 'instagrapi'
+    return session_path(library, username.strip()).exists()
+
 @app.post('/api/runs')
 def start(cfg:Config):
     return start_run(cfg)
 
 def start_run(cfg, project_id=None):
-    if not cfg.demo and cfg.method != 'browser' and (not cfg.login_username.strip() or not cfg.login_password.get_secret_value()):
+    if not cfg.demo and cfg.method != 'browser' and (
+        not cfg.login_username.strip()
+        or not (cfg.login_password.get_secret_value() or has_saved_session(cfg.method, cfg.login_username))
+    ):
         raise HTTPException(400,'برای روش بدون مرورگر، نام کاربری ورود و رمز را وارد کنید')
     if not lock.acquire(False):raise HTTPException(409,'یک اجرا فعال است')
     r=uuid.uuid4().hex

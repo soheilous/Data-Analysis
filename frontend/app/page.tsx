@@ -187,7 +187,7 @@ export default function Home(){
  const [savedProfiles, setSavedProfiles] = useState<string[]>([]);
  const [profileDraft, setProfileDraft] = useState('');
  const [refreshPosts, setRefreshPosts] = useState(false);
- const [likerLimit, setLikerLimit] = useState(100);
+ const [likerLimit, setLikerLimit] = useState(50);
  const [postLimit,setPostLimit]=useState(8),[commentLimit,setCommentLimit]=useState(100),[likers,setLikers]=useState(false),[sync,setSync]=useState(false);
  const [expandedPost, setExpandedPost] = useState<string | null>(null);
  const [selected,setSelected]=useState<string|null>(null),[posts,setPosts]=useState<Post[]>([]),[resultBusy,setResultBusy]=useState(false),[tab,setTab]=useState(0),[query,setQuery]=useState(''),[page,setPage]=useState(0),[deleting,setDeleting]=useState<Run|null>(null);
@@ -276,7 +276,7 @@ export default function Home(){
    setSavedProfiles(config.profiles?.length ? config.profiles : config.target ? [config.target] : []);
    setPostLimit(config.max_posts ?? 8);
    setCommentLimit(config.max_comments ?? 100);
-   setLikerLimit(config.max_likers ?? 100);
+   setLikerLimit(config.max_likers ?? 50);
    setLikers(config.likers ?? false);
    setSync(config.sync ?? false);
    setRefreshPosts(config.refresh_posts ?? false);
@@ -536,7 +536,7 @@ export default function Home(){
             label="حداکثر کامنت"
             value={testCommentLimit || ''}
             onChange={event => setTestCommentLimit(Number(event.target.value))}
-            slotProps={{htmlInput: {min: 1, max: 5000}}}
+            slotProps={{htmlInput: {min: 1, max: 500}}}
           />
           <FormControlLabel
             control={<Switch checked={background} onChange={event => setBackground(event.target.checked)} />}
@@ -586,14 +586,14 @@ export default function Home(){
          onAdd={() => addChip('profile')}
          onRemove={item => setSavedProfiles(savedProfiles.filter(profile => profile !== item))}
        />}
-   </>:<><TextField label={collectionScope === 'discover' ? 'سقف پست برای هر تگ' : 'سقف بررسی پست برای هر پیج'} type="number" value={postLimit} onChange={e=>setPostLimit(Number(e.target.value))} slotProps={{htmlInput:{min:1,max:100}}}/><TextField label="سقف کامنت برای هر پست" type="number" value={commentLimit} onChange={e=>setCommentLimit(Number(e.target.value))} slotProps={{htmlInput:{min:1,max:5000}}}/>
+   </>:<><TextField label={collectionScope === 'discover' ? 'سقف پست برای هر تگ' : 'سقف بررسی پست برای هر پیج'} type="number" value={postLimit} onChange={e=>setPostLimit(Number(e.target.value))} slotProps={{htmlInput:{min:1,max:50}}}/><TextField label="سقف کامنت برای هر پست" type="number" value={commentLimit} onChange={e=>setCommentLimit(Number(e.target.value))} slotProps={{htmlInput:{min:1,max:500}}}/>
      <Box>
        <FormControlLabel
          control={<Switch checked={likers} onChange={event => setLikers(event.target.checked)} slotProps={{input: {'aria-describedby': 'likers-hint'}}} />}
          label={`دریافت لایک‌کننده‌ها (حداکثر ${numbers(likerLimit)} نفر)`}
        />
        <Typography id="likers-hint" variant="body2" color="text.secondary" sx={{paddingInlineStart: '58px'}}>
-         نام حساب‌هایی را که هر پست را لایک کرده‌اند ثبت می‌کند.
+         نام حساب‌هایی را که هر پست را لایک کرده‌اند ثبت می‌کند. این بخش پرریسک‌ترین درخواست برای حساب است؛ فقط در صورت نیاز روشن کنید.
        </Typography>
      </Box>
      <Box>

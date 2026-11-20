@@ -1,5 +1,8 @@
 """Offline tests for browser_scraper helpers that need no browser."""
 
+import os
+os.environ.setdefault('DIDBAN_PAUSE_SCALE', '0')  # no human-scale waits in tests
+
 import unittest
 from unittest.mock import Mock
 

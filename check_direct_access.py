@@ -10,13 +10,30 @@ import sys
 from direct_scraper import CollectionError
 
 
-def collect_hashtags(tags, credentials, request_code, report, save, *, max_posts, max_comments):
-    """Collect a bounded number of results per hashtag with one login."""
+def paced(request, throttle):
+    def send(*args, **kwargs):
+        throttle.before_request()
+        return request(*args, **kwargs)
+    return send
+
+
+def collect_hashtags(tags, credentials, request_code, report, save, *, max_posts, max_comments, known_posts=()):
+    """Collect a bounded number of results per hashtag, reusing one saved device and session."""
     try:
         from instagrapi import Client
         from instagrapi.exceptions import AccountSuspended, ChallengeRequired, TwoFactorRequired
     except ImportError:
         raise CollectionError('کتابخانهٔ آزمون مستقیم نصب نیست. requirements.txt را نصب کنید.') from None
+    from safety import Throttle, account_key, classify_restriction, protect_file, session_path
+
+    username = credentials.get('username', '').strip()
+    throttle = Throttle(account_key('instagrapi', username), report)
+    try:
+        throttle.check()
+    except CollectionError:
+        credentials.clear()
+        raise
+    settings = session_path('instagrapi', username)
 
     logger = logging.Logger('instagram_probe')
     logger.disabled = True
@@ -28,24 +45,43 @@ def collect_hashtags(tags, credentials, request_code, report, save, *, max_posts
         raise ChallengeRequired('Password change requires manual account verification.')
 
     client.change_password_handler = stop_on_password_change
+    # Every request instagrapi sends waits a random, human-scale pause first
+    # and counts toward the account's daily budget.
+    client.private_request = paced(client.private_request, throttle)
+    client.public_request = paced(client.public_request, throttle)
     stage = 'ورود'
     try:
         report('دریافت مستقیم با instagrapi آغاز شد.')
+        if settings.exists():
+            try:
+                # Same device ids and cookies as last time: Instagram sees one
+                # phone that stays signed in, not a new device every run.
+                client.load_settings(settings)
+                report('دستگاه و نشست ذخیره‌شدهٔ قبلی استفاده می‌شود.')
+            except Exception:
+                report('تنظیمات ذخیره‌شده خوانده نشد؛ یک بار دوباره وارد می‌شویم.')
+        client.username = username
+        client.password = credentials.get('password', '')
+        if not client.password and not settings.exists():
+            raise CollectionError('نشست ذخیره‌شده‌ای برای این حساب نیست. رمز حساب را وارد کنید.')
         try:
-            logged_in = client.login(credentials['username'], credentials['password'])
+            logged_in = client.login()
         except TwoFactorRequired:
-            logged_in = client.login(
-                credentials['username'], credentials['password'],
-                verification_code=request_code(),
-            )
+            logged_in = client.login(verification_code=request_code())
         finally:
             credentials.clear()
         if not logged_in:
             raise CollectionError('ورود به حساب در دریافت مستقیم موفق نبود.')
-        report('ورود موفق بود.')
+        client.password = None
+        client.dump_settings(settings)
+        protect_file(settings)
+        report('ورود موفق بود و نشست برای اجراهای بعدی ذخیره شد.')
 
         seen_posts = set()
-        for tag in tags:
+        known = set(known_posts)
+        for index, tag in enumerate(tags):
+            if index:
+                throttle.between_sources()
             report(f'دریافت هشتگ: #{tag}')
             for tab, label in (('recent', 'اخیر'), ('top', 'برتر')):
                 stage = f'دریافت پست‌های {label} هشتگ #{tag}'
@@ -59,8 +95,9 @@ def collect_hashtags(tags, credentials, request_code, report, save, *, max_posts
 
             saved = 0
             for post in posts:
-                if post.id in seen_posts:
+                if post.id in seen_posts or post.code in known:
                     continue
+                throttle.before_post()
                 stage = f'دریافت کامنت‌های هشتگ #{tag}'
                 comments = [
                     {
@@ -89,6 +126,7 @@ def collect_hashtags(tags, credentials, request_code, report, save, *, max_posts
                 saved += 1
             report(f'#{tag}، بخش {label}: {saved} پست جدید از {len(posts)} نتیجه ذخیره شد.')
     except AccountSuspended:
+        throttle.restrict('suspended')
         raise CollectionError(
             'اینستاگرام در پاسخ به درخواست، تعلیق حساب را اعلام کرد. '
             'وضعیت حساب را در خود اینستاگرام بررسی کنید و در صورت نمایش گزینهٔ بررسی مجدد، مراحل آن را دنبال کنید.'
@@ -96,6 +134,9 @@ def collect_hashtags(tags, credentials, request_code, report, save, *, max_posts
     except CollectionError:
         raise
     except Exception as error:
+        kind = classify_restriction(error)
+        if kind:
+            raise throttle.restrict(kind) from None
         # Never log upstream exception text, which may contain session data.
         raise CollectionError(f'مرحلهٔ {stage} ناموفق بود ({type(error).__name__}).') from None
     finally:
