@@ -4,6 +4,7 @@ import {Alert,Avatar,Box,Button,Card,Chip,CircularProgress,Container,Dialog,Dial
 import {Add,Close,DashboardOutlined,DeleteOutlined,DownloadOutlined,LayersOutlined,PlayArrow,Refresh,Search,Tag,TravelExplore} from '@mui/icons-material';
 import {ChipInput} from './chip-input';
 import {ProjectOverview} from './project-overview';
+import {ProjectAnalytics} from './project-analytics';
 type CollectionMethod = 'direct' | 'browser' | 'instagrapi_probe' | 'instagrapi';
 type CollectionScope = 'profile_tags' | 'discover';
 type Config = {
@@ -172,6 +173,7 @@ export default function Home(){
  const [editingProject, setEditingProject] = useState<string | null>(null);
  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
  const [showProjectData, setShowProjectData] = useState(false);
+ const [showAnalytics, setShowAnalytics] = useState(false);
  const currentProject = projects.find(project => project.id === projectId);
  const [testingPost, setTestingPost] = useState(false);
  const [testPostUrl, setTestPostUrl] = useState('');
@@ -197,6 +199,7 @@ export default function Home(){
    setProjectId(project);
    setSelected(run);
    setShowProjectData(!!project && params.get('view') === 'results' && !run);
+   setShowAnalytics(!!project && params.get('view') === 'analytics' && !run);
    setDriveOpen(params.get('view') === 'drive');
    setTab(0);
    setExpandedPost(null);
@@ -446,6 +449,8 @@ export default function Home(){
           <Stack direction="row" sx={{gap: 1, flexWrap: 'wrap'}}>
             <Button variant="contained" disabled={active || busy} onClick={() => void runProject(currentProject)}>شروع جمع‌آوری</Button>
             <Button onClick={() => navigate({page: 'projects', project: currentProject.id, view: 'results'})}>داده‌های پروژه</Button>
+            <Button variant={showAnalytics ? 'outlined' : 'text'} aria-pressed={showAnalytics}
+              onClick={() => navigate({page: 'projects', project: currentProject.id, view: showAnalytics ? null : 'analytics'})}>تحلیل پروژه</Button>
             <Button component="a" href={'/api/projects/' + currentProject.id + '/export/csv'}>CSV</Button>
             <Button component="a" href={'/api/projects/' + currentProject.id + '/export/xlsx'}>Excel</Button>
             <Button onClick={() => openProject(currentProject)}>ویرایش پروژه</Button>
@@ -470,6 +475,7 @@ export default function Home(){
         )}
       </Card>
     )}
+    {currentProject && showAnalytics && <Box sx={{mb: 3}}><ProjectAnalytics projectId={currentProject.id} /></Box>}
     <Card>
       <Typography variant="h6" sx={{p: 3}}>{currentProject ? 'تاریخچهٔ پروژه' : 'آزمون‌ها و اجراهای مستقل'}</Typography>
       <Divider />
