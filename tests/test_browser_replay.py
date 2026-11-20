@@ -129,27 +129,34 @@ class CollectInBrowserTests(unittest.TestCase):
         replay = InstagramReplay(
             {'/': 'home.html', '/example_brand/': 'profile.html', **POST_PAGES}, ['post_graphql'],
         )
-        real_sync_playwright = sync_playwright
+        # Start the Playwright driver before LOCALAPPDATA is redirected: on
+        # Windows the driver finds its installed browsers through LOCALAPPDATA.
+        playwright = sync_playwright().start()
+        self.addCleanup(playwright.stop)
+        real_launch = playwright.chromium.launch_persistent_context
+
+        def launch_persistent_context(user_data_dir, **options):
+            options.pop('channel', None)
+            context = real_launch(user_data_dir, **{**options, **launch_options()})
+            replay.attach(context)
+            return context
 
         @contextmanager
         def replayed_playwright():
-            with real_sync_playwright() as playwright:
-                real_launch = playwright.chromium.launch_persistent_context
-
-                def launch_persistent_context(user_data_dir, **options):
-                    options.pop('channel', None)
-                    context = real_launch(user_data_dir, **{**options, **launch_options()})
-                    replay.attach(context)
-                    return context
-
-                yield SimpleNamespace(chromium=SimpleNamespace(
-                    launch_persistent_context=launch_persistent_context))
+            yield SimpleNamespace(chromium=SimpleNamespace(
+                launch_persistent_context=launch_persistent_context))
 
         rows, logs = [], []
         with tempfile.TemporaryDirectory() as local_app_data, \
                 patch.dict(os.environ, {'LOCALAPPDATA': local_app_data}), \
                 patch.object(browser_scraper, 'sync_playwright', replayed_playwright):
-            browser_scraper.collect_in_browser(config, rows.append, logs.append, known_posts)
+            try:
+                browser_scraper.collect_in_browser(config, rows.append, logs.append, known_posts)
+            except browser_scraper.CollectionError as error:
+                # collect_in_browser hides Playwright errors from users; show them here.
+                if isinstance(error.__context__, Error):
+                    raise AssertionError(f'Playwright error: {error.__context__}') from error
+                raise
         return rows, logs
 
     def test_profile_collection_saves_post_and_skips_known(self):
