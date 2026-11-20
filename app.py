@@ -19,7 +19,7 @@ from project_store import (
 )
 from analytics import project_analytics
 from browser_scraper import collect_in_browser, parse_post_url
-from safety import session_path
+from safety import account_key, account_status, session_path
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('DIDBAN_DATA_DIR') or ROOT/'data')
 DATA.mkdir(parents=True, exist_ok=True)
@@ -356,6 +356,11 @@ def delete_drive_file(change: DriveFileChange):
     except OSError:
         raise HTTPException(400, 'حذف فایل ممکن نشد.')
     return {'ok': True}
+
+@app.get('/api/account-status')
+def get_account_status():
+    # Projects collect with the browser account; the dashboard shows its budget and cooldown.
+    return account_status(account_key('browser'))
 
 @app.get('/api/runs')
 def runs():
