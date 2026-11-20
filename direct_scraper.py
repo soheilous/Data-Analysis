@@ -1,4 +1,8 @@
-"""Direct requests; no browser, saved session, downloaded media or credential files."""
+"""Direct requests through Instaloader; no browser or downloaded media.
+
+The Instagram session (cookies, not the password) is saved under the Didban
+state folder and reused, so each run does not log in again.
+"""
 from itertools import islice
 from datetime import datetime,timezone
 
@@ -54,45 +58,98 @@ def describe_failure(error, stage, errors):
         return 'درخواست به اینستاگرام با خطای ارتباطی مواجه شد.'
     return 'خطای پیش‌بینی‌نشده رخ داد.'
 
-def collect_direct(config, credentials, save, log, request_code=None, recover_login=None):
+def polite_rate_controller(instaloader, throttle):
+    class PoliteRateController(instaloader.RateController):
+        """Instaloader's own limits plus a random human-scale pause per request."""
+
+        def wait_before_query(self, query_type):
+            super().wait_before_query(query_type)
+            throttle.before_request()
+
+    return lambda context: PoliteRateController(context)
+
+
+def restore_session(loader, username, log):
+    from safety import session_path
+
+    path = session_path('instaloader', username)
+    if not path.exists():
+        return False
+    try:
+        loader.load_session_from_file(username, str(path))
+        if loader.test_login() == username:
+            log('نشست ذخیره‌شدهٔ قبلی استفاده شد؛ ورود دوباره لازم نبود.')
+            return True
+    except Exception:
+        pass
+    log('نشست ذخیره‌شده دیگر معتبر نیست؛ یک بار دوباره وارد می‌شویم.')
+    return False
+
+
+def keep_session(loader, username):
+    from safety import protect_file, session_path
+
+    path = session_path('instaloader', username)
+    try:
+        loader.save_session_to_file(str(path))
+        protect_file(path)
+    except Exception:
+        pass
+
+
+def collect_direct(config, credentials, save, log, request_code=None, recover_login=None, known_posts=()):
     try:
         import instaloader
         from instaloader import exceptions as errors
     except ImportError:
         raise CollectionError('کتابخانه روش مستقیم نصب نیست؛ نصب requirements.txt را دوباره اجرا کنید.') from None
-    loader=instaloader.Instaloader(quiet=True,max_connection_attempts=1,request_timeout=30)
+    from safety import Throttle, account_key, classify_restriction
+
+    username = credentials.get('username', '')
+    throttle = Throttle(account_key('direct', username), log)
+    try:
+        throttle.check()
+    except CollectionError:
+        credentials.clear()
+        raise
+    loader=instaloader.Instaloader(quiet=True,max_connection_attempts=1,request_timeout=30,
+                                   rate_controller=polite_rate_controller(instaloader, throttle))
     loader.context.error=lambda *args,**kwargs: None
     stage = 'ورود به حساب'
     try:
-        log('ورود مستقیم به اینستاگرام؛ مرورگری باز نمی‌شود.')
-        try:
-            loader.login(credentials['username'],credentials['password'])
-        except errors.TwoFactorAuthRequiredException:
-            stage = 'تأیید دومرحله‌ای'
-            code = credentials.get('code', '').strip()
-            credentials.clear()
-            if not code and request_code is not None:
-                code = request_code()
-            if not code:
-                raise CollectionError('اینستاگرام کد دومرحله‌ای می‌خواهد.')
+        if not restore_session(loader, username, log):
+            if not credentials.get('password'):
+                raise CollectionError('نشست ذخیره‌شده‌ای برای این حساب نیست. رمز حساب را وارد کنید.')
+            log('ورود مستقیم به اینستاگرام؛ مرورگری باز نمی‌شود.')
             try:
-                loader.two_factor_login(code)
-            finally:
-                del code
-        except (errors.LoginException, errors.AbortDownloadException) as error:
-            if recover_login is None or not is_security_challenge(error):
-                raise
-            username = credentials['username']
-            credentials.clear()
-            stage = 'تأیید امنیتی در مرورگر'
-            recover_login(username, loader)
+                loader.login(credentials['username'],credentials['password'])
+            except errors.TwoFactorAuthRequiredException:
+                stage = 'تأیید دومرحله‌ای'
+                code = credentials.get('code', '').strip()
+                credentials.clear()
+                if not code and request_code is not None:
+                    code = request_code()
+                if not code:
+                    raise CollectionError('اینستاگرام کد دومرحله‌ای می‌خواهد.')
+                try:
+                    loader.two_factor_login(code)
+                finally:
+                    del code
+            except (errors.LoginException, errors.AbortDownloadException) as error:
+                if recover_login is None or not is_security_challenge(error):
+                    raise
+                credentials.clear()
+                stage = 'تأیید امنیتی در مرورگر'
+                recover_login(username, loader)
+            keep_session(loader, username)
+            log('ورود به حساب انجام شد و نشست برای اجراهای بعدی ذخیره شد.')
         credentials.clear()
-        log('ورود به حساب انجام شد.')
         sources=[('profile',name) for name in config.get('profiles',[])]+[('hashtag',name) for name in config.get('hashtags',[])]
         if not sources:sources=[('profile',config['target'])]
-        seen=set()
-        count=0
-        for kind,name in sources:
+        seen=set(known_posts)
+        count=skipped=0
+        for index,(kind,name) in enumerate(sources):
+            if index:throttle.between_sources()
             source_stage = 'دریافت پست‌های پیج' if kind == 'profile' else 'دریافت پست‌های هشتگ'
             stage = source_stage
             log(('دریافت پیج: ' if kind=='profile' else 'دریافت هشتگ: #')+name)
@@ -101,8 +158,11 @@ def collect_direct(config, credentials, save, log, request_code=None, recover_lo
             else:
                 posts=instaloader.Hashtag.from_name(loader.context,name).get_posts_resumable()
             for post in islice(posts,config['max_posts']):
-                if post.shortcode in seen:continue
+                if post.shortcode in seen:
+                    skipped+=post.shortcode in known_posts
+                    continue
                 seen.add(post.shortcode)
+                throttle.before_post()
                 stage = 'دریافت کامنت‌ها'
                 comments=[]
                 for comment in islice(post.get_comments(),config['max_comments']):
@@ -122,10 +182,14 @@ def collect_direct(config, credentials, save, log, request_code=None, recover_lo
                 count+=1
                 log(f'پست {count} ذخیره شد؛ {len(comments)} کامنت و {len(likers)} لایک‌کننده دریافت شد.')
                 stage = source_stage
-        if not count:raise CollectionError('پست قابل دسترسی پیدا نشد.')
+        if skipped:log(f'{skipped} پست قبلاً ثبت شده بود و دوباره دریافت نشد.')
+        if not count and not skipped:raise CollectionError('پست قابل دسترسی پیدا نشد.')
     except CollectionError:
         raise
     except Exception as error:
+        kind = classify_restriction(error)
+        if kind:
+            raise throttle.restrict(kind, f'مرحلهٔ {stage} ناموفق بود. ') from None
         detail = describe_failure(error, stage, errors)
         raise CollectionError(f'مرحلهٔ {stage} ناموفق بود. {detail}') from None
     finally:

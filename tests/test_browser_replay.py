@@ -7,6 +7,9 @@ REQUIRE_BROWSER_TESTS is set.
 """
 
 import os
+os.environ.setdefault('DIDBAN_PAUSE_SCALE', '0')  # no human-scale waits in tests
+
+import os
 import tempfile
 import unittest
 from contextlib import contextmanager

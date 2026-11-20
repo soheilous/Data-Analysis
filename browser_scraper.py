@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import random
 import re
 from datetime import datetime, timezone
 from unicodedata import normalize
@@ -13,11 +14,19 @@ from playwright.sync_api import Error, TimeoutError, sync_playwright
 from browser_login import INSTAGRAM_ORIGIN, wait_for_instagram_login
 from direct_scraper import CollectionError
 from instagram_network import PostResponses
+from safety import AccountRestricted, Limits, Throttle, account_key
 from scraper import extract_likers, extract_total_likes, is_logged_in
 
 
 POST_LINKS = 'main a[href*="/p/"], main a[href*="/reel/"], main a[href*="/reels/"]'
 CAPTION_TAG = re.compile(r'(?<![\w\u200c])[#＃]([\w\u200c]+)')
+_rng = random.Random()
+
+
+def human_wait(page, base_ms):
+    """Wait at least base_ms, plus a random human-scale extra."""
+    scale = Limits.from_env().request_pause[1] / Limits().request_pause[1]
+    page.wait_for_timeout(int(base_ms * (1 + _rng.uniform(0.3, 1.5) * scale)))
 
 
 def parse_post_url(value):
@@ -47,7 +56,7 @@ def matches_source(url, kind, name):
     return path == '/explore/search/keyword' and query.casefold() == '#' + name.casefold()
 
 
-def find_post_links(page, kind, name, limit, scrolls, check_access=lambda: None, *, discover=False):
+def find_post_links(page, kind, name, limit, scrolls, check_access=lambda: None, *, discover=False, pace=lambda: None):
     if kind == 'profile':
         paths = [f'/{quote(name, safe="")}/']
     else:
@@ -59,8 +68,11 @@ def find_post_links(page, kind, name, limit, scrolls, check_access=lambda: None,
             paths.reverse()
 
     for path in paths:
+        pace()
         response = page.goto(INSTAGRAM_ORIGIN + path, wait_until='domcontentloaded', timeout=40_000)
-        if response and response.status in (401, 403, 429):
+        if response and response.status in (403, 429):
+            raise AccountRestricted(f'اینستاگرام صفحهٔ منبع را با خطای {response.status} رد کرد.', 'rate_limit')
+        if response and response.status == 401:
             raise CollectionError(f'اینستاگرام صفحهٔ منبع را با خطای {response.status} رد کرد.')
         check_access()
         if not matches_source(page.url, kind, name):
@@ -87,8 +99,9 @@ def find_post_links(page, kind, name, limit, scrolls, check_access=lambda: None,
                 if len(links) >= limit:
                     return links
             if attempt < scrolls:
-                page.mouse.wheel(0, 850)
-                page.wait_for_timeout(1250)
+                pace()
+                page.mouse.wheel(0, _rng.randint(600, 900))
+                human_wait(page, 1250)
         if links:
             return links
     return {}
@@ -97,8 +110,13 @@ def find_post_links(page, kind, name, limit, scrolls, check_access=lambda: None,
 def check_page_access(page, responses):
     responses.check_access()
     path = urlsplit(page.url).path
-    if path.startswith(('/challenge', '/checkpoint', '/accounts/login', '/accounts/suspended')):
-        raise CollectionError('اینستاگرام ورود یا تأیید حساب خواست. اجرا متوقف شد.')
+    message = 'اینستاگرام ورود یا تأیید حساب خواست. اجرا متوقف شد.'
+    if path.startswith('/accounts/suspended'):
+        raise AccountRestricted(message, 'suspended')
+    if path.startswith(('/challenge', '/checkpoint')):
+        raise AccountRestricted(message, 'challenge')
+    if path.startswith('/accounts/login'):
+        raise CollectionError(message)
 
 
 COMMENT_CONTROL = re.compile(
@@ -272,7 +290,7 @@ def collect_loaded_comments(page, network, limit):
             opened_replies.append(handle)
             expanded = True
             expanded_count += 1
-            page.wait_for_timeout(700)
+            human_wait(page, 700)
             check_page_access(page, network)
             network.read_pending_comments()
             capture_visible()
@@ -300,7 +318,7 @@ def collect_loaded_comments(page, network, limit):
         if idle_steps >= 3:
             stop_reason = 'انتهای پنل، بدون نتیجهٔ تازه' if scroll_state == 'bottom' else 'پنل قابل اسکرول پیدا نشد'
             break
-        page.wait_for_timeout(700)
+        human_wait(page, 700)
     check_page_access(page, network)
     network.read_pending_comments()
     capture_visible()
@@ -361,7 +379,7 @@ def read_post(page, shortcode, url, config, log, *, required_tags=None):
             or not re.fullmatch(r'/(?:[A-Za-z0-9_.]{1,30}/)?(?:p|reel|reels)/' + re.escape(shortcode) + r'/?', location.path, re.ASCII)
         ):
             raise CollectionError('اینستاگرام صفحهٔ پست را باز نکرد.')
-        page.wait_for_timeout(1500)
+        human_wait(page, 1500)
         if required_tags:
             caption = matching_caption(page, network.fields.get('caption'), required_tags)
             if caption is None:
@@ -389,7 +407,7 @@ def read_post(page, shortcode, url, config, log, *, required_tags=None):
                 more.click(timeout=2500)
             except TimeoutError:
                 break
-            page.wait_for_timeout(1200)
+            human_wait(page, 1200)
             if urlsplit(page.url).path.rstrip('/') != location.path.rstrip('/'):
                 break
         check_page_access(page, network)
@@ -485,9 +503,12 @@ def open_instagram_browser(chromium, profile_dir, background, log):
             page = context.pages[0] if context.pages else context.new_page()
             home = page.goto(INSTAGRAM_ORIGIN + '/', wait_until='domcontentloaded', timeout=30_000)
             if home and home.status in (403, 429):
-                raise CollectionError(f'اینستاگرام دسترسی را محدود کرد ({home.status}).')
-            if urlsplit(page.url).path.startswith(('/challenge', '/checkpoint', '/accounts/suspended')):
-                raise CollectionError('اینستاگرام تأیید حساب خواست. وضعیت حساب را در خود اینستاگرام بررسی کنید.')
+                raise AccountRestricted(f'اینستاگرام دسترسی را محدود کرد ({home.status}).', 'rate_limit')
+            home_path = urlsplit(page.url).path
+            if home_path.startswith('/accounts/suspended'):
+                raise AccountRestricted('اینستاگرام محدودیت حساب را اعلام کرد.', 'suspended')
+            if home_path.startswith(('/challenge', '/checkpoint')):
+                raise AccountRestricted('اینستاگرام تأیید حساب خواست. وضعیت حساب را در خود اینستاگرام بررسی کنید.', 'challenge')
             if not is_logged_in(page):
                 if headless:
                     log('نشست آماده نیست. پنجرهٔ ورود باز می‌شود و این اجرا با پنجرهٔ قابل مشاهده ادامه می‌یابد.')
@@ -515,6 +536,9 @@ def collect_in_browser(config, save, log, known_posts=()):
     unresolved_in_a_row = 0
     profile_dir = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'Didban' / 'instagram-profile'
     profile_dir.mkdir(parents=True, exist_ok=True)
+    # The browser profile holds one signed-in account, so it has one budget.
+    throttle = Throttle(account_key('browser'), log)
+    throttle.check()
     try:
         with sync_playwright() as playwright:
             with open_instagram_browser(playwright.chromium, profile_dir, config.get('background', False), log) as (context, page, background):
@@ -523,6 +547,7 @@ def collect_in_browser(config, save, log, known_posts=()):
                 if config.get('post_url'):
                     shortcode, url = parse_post_url(config['post_url'])
                     log(f'نشست مرورگر آماده است. پست {shortcode} بررسی می‌شود.')
+                    throttle.before_post()
                     row = read_post(post_page, shortcode, url, run_config, log)
                     save({**row, 'source': shortcode, 'source_type': 'post'})
                     log(f'پست ذخیره شد. {len(row["comments"])} کامنت ثبت شد.')
@@ -530,7 +555,9 @@ def collect_in_browser(config, save, log, known_posts=()):
                 log('نشست مرورگر آماده است. صفحهٔ منابع بررسی می‌شود.')
                 source_responses = PostResponses('', 0)
                 page.on('response', source_responses.receive)
-                for kind, name in sources:
+                for index, (kind, name) in enumerate(sources):
+                    if index:
+                        throttle.between_sources()
                     if kind == 'profile':
                         log(f'بررسی پیج: @{name}')
                     else:
@@ -538,7 +565,7 @@ def collect_in_browser(config, save, log, known_posts=()):
                     links = find_post_links(
                         page, kind, name, config['max_posts'], config['scrolls'],
                         check_access=lambda: check_page_access(page, source_responses),
-                        discover=scope == 'discover',
+                        discover=scope == 'discover', pace=throttle.before_request,
                     )
                     check_page_access(page, source_responses)
                     if not links:
@@ -553,6 +580,7 @@ def collect_in_browser(config, save, log, known_posts=()):
                         if shortcode in known_posts and not config.get('refresh_posts'):
                             skipped.add(shortcode)
                             continue
+                        throttle.before_post()
                         row = read_post(post_page, shortcode, url, run_config, log, required_tags=required_tags)
                         if row is None:
                             log(f'تگ موردنظر در کپشن قابل‌خواندن پست {shortcode} پیدا نشد.')
@@ -568,6 +596,8 @@ def collect_in_browser(config, save, log, known_posts=()):
                                 raise CollectionError(
                                     'کامنت سه پست پیاپی قابل خواندن نبود. اجرا متوقف شد و پست‌های ثبت‌شده در نتایج هستند.'
                                 )
+    except AccountRestricted as error:
+        raise throttle.restrict(error.kind) from None
     except Error:
         raise CollectionError('مرورگر نتوانست صفحهٔ اینستاگرام را باز یا پردازش کند. نصب و دسترسی مرورگر را بررسی کنید.') from None
     if skipped:
