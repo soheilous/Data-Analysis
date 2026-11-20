@@ -1,6 +1,7 @@
 import {useState} from 'react';
-import {Box, Button, ButtonBase, Card, Chip, CircularProgress, Stack, ToggleButton, ToggleButtonGroup, Typography} from '@mui/material';
-import {ForumOutlined, Instagram, LayersOutlined, PlayArrow} from '@mui/icons-material';
+import {Box, Button, ButtonBase, Card, CircularProgress, Stack, ToggleButton, ToggleButtonGroup, Typography} from '@mui/material';
+import {Add, ForumOutlined, Instagram, LayersOutlined, PlayArrow} from '@mui/icons-material';
+import {StatusChip} from './run-status';
 
 type OverviewProject = {
   id: string;
@@ -27,12 +28,12 @@ const dayKey = new Intl.DateTimeFormat('sv-SE', {timeZone: 'Asia/Tehran'});
 const dayLabel = new Intl.DateTimeFormat('fa-IR', {timeZone: 'Asia/Tehran', month: 'short', day: 'numeric'});
 const activeStatuses = new Set(['running', 'awaiting_code', 'awaiting_security']);
 
-export function ProjectOverview({projects, runs, loading, statuses, onOpen}: {
+export function ProjectOverview({projects, runs, loading, onOpen, onCreate}: {
   projects: OverviewProject[];
   runs: OverviewRun[];
   loading: boolean;
-  statuses: Record<string, string>;
   onOpen: (id: string) => void;
+  onCreate: () => void;
 }) {
   const [metric, setMetric] = useState<Metric>('runs');
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
@@ -69,7 +70,7 @@ export function ProjectOverview({projects, runs, loading, statuses, onOpen}: {
     {label: 'اجراهای فعال', count: projectRuns.filter(run => activeStatuses.has(run.status)).length, icon: <PlayArrow />},
   ];
 
-  if (loading) return <CircularProgress size={28} aria-label="در حال بارگیری نمای کلی" />;
+  if (loading) return <Box sx={{py: 6, textAlign: 'center'}}><CircularProgress size={28} aria-label="در حال بارگیری نمای کلی" /></Box>;
 
   return (
     <Stack spacing={3}>
@@ -126,7 +127,12 @@ export function ProjectOverview({projects, runs, loading, statuses, onOpen}: {
       <Box>
         <Typography variant="h6" sx={{mb: 2}}>خلاصهٔ پروژه‌ها</Typography>
         {projects.length === 0 ? (
-          <Card sx={{p: 3}}><Typography color="text.secondary">برای دیدن آمار، یک پروژه تعریف کنید.</Typography></Card>
+          <Card sx={{p: 3}}>
+            <Stack spacing={1.5} sx={{alignItems: 'flex-start'}}>
+              <Typography color="text.secondary">هنوز پروژه‌ای ندارید. با ساخت پروژه، پیج‌ها و تگ‌ها را تعریف کنید تا آمار اینجا نمایش داده شود.</Typography>
+              <Button variant="contained" startIcon={<Add />} onClick={onCreate}>ساخت اولین پروژه</Button>
+            </Stack>
+          </Card>
         ) : (
           <Box sx={{display: 'grid', gridTemplateColumns: {xs: '1fr', md: 'repeat(2, minmax(0, 1fr))', xl: 'repeat(3, minmax(0, 1fr))'}, gap: 2}}>
             {projects.map(project => {
@@ -137,7 +143,7 @@ export function ProjectOverview({projects, runs, loading, statuses, onOpen}: {
                   <Stack spacing={1.5}>
                     <Stack direction="row" sx={{gap: 1, justifyContent: 'space-between', alignItems: 'flex-start'}}>
                       <Typography sx={{fontWeight: 700, overflowWrap: 'anywhere'}}>{config.title || 'پروژه'}</Typography>
-                      <Chip size="small" color={latest?.status === 'failed' ? 'error' : latest?.status === 'completed' ? 'success' : 'default'} variant="outlined" label={latest ? statuses[latest.status] ?? latest.status : 'بدون اجرا'} />
+                      <StatusChip status={latest?.status} />
                     </Stack>
                     <Typography variant="body2" color="text.secondary">
                       {numbers(config.profiles?.length ?? 0)} پیج · {numbers(config.hashtags?.length ?? 0)} تگ

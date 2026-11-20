@@ -1,10 +1,12 @@
 'use client';
 import {useCallback,useEffect,useMemo,useState} from 'react';
-import {Alert,Avatar,Box,Button,Card,Chip,CircularProgress,Container,Dialog,DialogActions,DialogContent,DialogTitle,Divider,FormControlLabel,IconButton,InputAdornment,LinearProgress,MenuItem,Paper,Stack,Step,StepLabel,Stepper,Switch,Tab,Tabs,Table,TableBody,TableCell,TableContainer,TableHead,TablePagination,TableRow,TextField,Tooltip,Typography} from '@mui/material';
-import {Add,Close,DashboardOutlined,DeleteOutlined,DownloadOutlined,LayersOutlined,PlayArrow,Refresh,Search,Tag,TravelExplore} from '@mui/icons-material';
+import type {StepIconProps} from '@mui/material';
+import {Alert,Avatar,Box,Button,Card,Chip,CircularProgress,Container,Dialog,DialogActions,DialogContent,DialogTitle,Divider,FormControlLabel,IconButton,InputAdornment,MenuItem,Paper,Stack,Step,StepLabel,Stepper,Switch,Tab,Tabs,Table,TableBody,TableCell,TableContainer,TableHead,TablePagination,TableRow,TextField,Tooltip,Typography,useMediaQuery} from '@mui/material';
+import {Add,ArrowForward,Check,Close,DashboardOutlined,DeleteOutlined,DownloadOutlined,LayersOutlined,PlayArrow,Refresh,Search,Tag,TravelExplore} from '@mui/icons-material';
 import {ChipInput} from './chip-input';
 import {ProjectOverview} from './project-overview';
 import {ProjectAnalytics} from './project-analytics';
+import {AccountStatusCard,ActiveRunBanner,RunProgress,StatusChip,activeStatuses,blockedReason,useAccountStatus,useNow} from './run-status';
 type CollectionMethod = 'direct' | 'browser' | 'instagrapi_probe' | 'instagrapi';
 type CollectionScope = 'profile_tags' | 'discover';
 type Config = {
@@ -29,13 +31,16 @@ type Project = {id: string; config: string; created_at: string; updated_at: stri
 type Run={id:string,project_id?:string|null,started_at?:string|null,config:string,status:string,logs:string,posts_count:number,comments_count:number};
 type Comment={username:string,text:string,time?:string,likes?:number};
 type Post={post_url:string,shortcode?:string,published_at?:string|null,scraped_at?:string|null,caption?:string,owner?:string,source?:string,source_type?:string,total_likes?:string|number,comments:Comment[],likers:string[]};
-const labels:Record<string,string>={running:'در حال جمع‌آوری',awaiting_code:'منتظر کد تأیید',awaiting_security:'منتظر تأیید امنیتی',completed:'تکمیل‌شده',failed:'نیاز به بررسی',interrupted:'قطع‌شده'};
+// Keeps @usernames and other Latin text in the right order inside Persian sentences.
+const ltr=(text:string)=>'\u2066'+text+'\u2069';
+const likesLabel=(value?:string|number)=>{if(value===undefined||value===null||value==='')return '—';const n=Number(String(value).replace(/,/g,''));return Number.isFinite(n)?numbers(n):String(value)};
+function PersianStepIcon({active,completed,icon}:StepIconProps){return <Box sx={{width:28,height:28,borderRadius:'50%',display:'grid',placeItems:'center',fontSize:14,fontWeight:700,color:'#fff',bgcolor:active||completed?'primary.main':'#b9c2bd'}}>{completed?<Check sx={{fontSize:18}}/>:numbers(Number(icon))}</Box>}
 const numbers=(n:number)=>n.toLocaleString('fa-IR');
 const configOf=(r:Run | Project):Config=>JSON.parse(r.config);
 function dateLabel(value?: string | null) {
   if (!value) return '—';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('fa-IR', {timeZone: 'Asia/Tehran'});
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('fa-IR', {timeZone: 'Asia/Tehran', dateStyle: 'medium', timeStyle: 'short'});
 }
 async function api<T>(url:string,options?:RequestInit):Promise<T>{const response=await fetch(url,{cache:'no-store',...options});if(!response.ok){let message='ارتباط با سرور برقرار نشد';try{const error=await response.json();message=typeof error.detail==='string'?error.detail:'اطلاعات فرم معتبر نیست'}catch{}throw new Error(message)}return response.json()}
 function VerificationPrompt({runId, onAccepted}: {runId: string; onAccepted: () => Promise<void>}) {
@@ -175,6 +180,10 @@ export default function Home(){
  const [showProjectData, setShowProjectData] = useState(false);
  const [showAnalytics, setShowAnalytics] = useState(false);
  const currentProject = projects.find(project => project.id === projectId);
+ const account = useAccountStatus();
+ const clock = useNow();
+ const blocked = blockedReason(account, clock);
+ const compact = useMediaQuery('(max-width:599.95px)');
  const [testingPost, setTestingPost] = useState(false);
  const [testPostUrl, setTestPostUrl] = useState('');
  const [testCommentLimit, setTestCommentLimit] = useState(20);
@@ -229,7 +238,8 @@ export default function Home(){
    : '/api/runs/' + selected + '/export/';
  const visibleRuns = projectId ? runs.filter(run => run.project_id === projectId) : runs.filter(run => !run.project_id);
  useEffect(()=>{if(!resultUrl)return;let alive=true;async function load(){try{const data=await api<Post[]>(resultUrl!);if(alive)setPosts(data)}catch(e){if(alive)setError((e as Error).message)}finally{if(alive)setResultBusy(false)}}setResultBusy(true);setPosts([]);void load();const timer=setInterval(()=>{if(!document.hidden)void load()},4000);return()=>{alive=false;clearInterval(timer)}},[resultUrl]);
- const active=runs.some(r => ['running', 'awaiting_code', 'awaiting_security'].includes(r.status));
+ const activeRun=runs.find(r => activeStatuses.has(r.status));
+ const active=!!activeRun;
  function readChips(items: string[], draft: string, kind: 'tag' | 'profile') {
    const isTag = kind === 'tag';
    const additions = draft.split(/[,،\n]+/).map(item => item.trim()).filter(Boolean);
@@ -404,7 +414,7 @@ export default function Home(){
 
  async function remove(){if(!deleting)return;setBusy(true);try{await api('/api/runs/'+deleting.id+'/results',{method:'DELETE'});if(selected===deleting.id)navigate({page:'projects',project:projectId});setRuns(old=>old.filter(x=>x.id!==deleting.id));setDeleting(null);setNotice('اجرا و نتایج محلی آن پاک شدند');await refresh()}catch(e){setError((e as Error).message)}finally{setBusy(false)}}
  const postOwners = [...new Set(posts.map(post => post.owner || (post.source_type === 'profile' ? post.source : '')).filter(Boolean))];
- const resultTitle = postOwners.length ? postOwners.map(owner => '@' + owner).join('، ') : (selectedRun ? configOf(selectedRun).profiles?.map(name => '@' + name).join('، ') : '') || (showProjectData ? 'داده‌های پروژه' : 'نتایج اجرا');
+ const resultTitle = postOwners.length ? postOwners.map(owner => ltr('@' + owner)).join('، ') : (selectedRun ? configOf(selectedRun).profiles?.map(name => ltr('@' + name)).join('، ') : '') || (showProjectData ? 'داده‌های پروژه' : 'نتایج اجرا');
  const comments=useMemo(()=>posts.flatMap(p=>(p.comments||[]).map(c=>({...c,post_url:p.post_url}))),[posts]);
  const filteredPosts=posts.filter(p=>[p.caption,p.owner,p.source,p.post_url].some(x=>x?.toLowerCase().includes(query.toLowerCase())));
  const filteredComments=comments.filter(c=>(c.text+' '+c.username).toLowerCase().includes(query.toLowerCase()));
@@ -420,34 +430,39 @@ export default function Home(){
    <Box component="header" sx={{bgcolor:'white',borderBottom:'1px solid #e5eae6',px:{xs:2,md:5},py:2,display:'flex',alignItems:'center',justifyContent:'space-between'}}><Stack direction="row" spacing={1} sx={{alignItems:"center"}}><Typography sx={{fontWeight:700}}>پایش اینستاگرام</Typography><Chip size="small" label="محلی" variant="outlined"/></Stack><Stack direction="row" spacing={1} sx={{alignItems:"center"}}><Box sx={{width:7,height:7,borderRadius:'50%',bgcolor:error?'error.main':'success.main'}}/><Typography variant="caption">{error?'ارتباط نیاز به بررسی دارد':'فضای کار شخصی'}</Typography><Tooltip title="تازه‌سازی"><IconButton aria-label="تازه‌سازی" onClick={()=>void refresh()}><Refresh/></IconButton></Tooltip></Stack></Box>
    <Container maxWidth="xl" sx={{py:{xs:3,md:5},px:{md:5}}}>
     {error&&<Alert severity="error" sx={{mb:2}}>{error}</Alert>}{notice&&<Alert severity="success" onClose={()=>setNotice('')} sx={{mb:2}}>{notice}</Alert>}
-    <Stack direction={{xs:'column',sm:'row'}} spacing={2} sx={{alignItems:{sm:'center'},justifyContent:"space-between",mb:4}}><Box><Typography variant="h4" sx={{mt:.5,mb:1}}>{nav===0?'نمای کلی':currentProject?'جزئیات پروژه':'پروژه‌ها و اجراها'}</Typography></Box><Stack direction={{xs: 'column', sm: 'row'}} spacing={1}>
-      <Button variant="outlined" onClick={() => navigate({page: nav === 1 ? 'projects' : null, project: projectId, view: 'drive'})}>فایل‌های Google Drive</Button>
-      <Button variant="outlined" disabled={active} onClick={() => openPostTest()}>آزمون لینک پست</Button>
-      <Button variant="contained" startIcon={<Add/>} disabled={active} onClick={() => openProject()}>پروژه جدید</Button>
+    {activeRun&&<ActiveRunBanner run={activeRun} title={configOf(activeRun).title ?? 'اجرا'} onOpen={()=>navigate({page:'projects',project:activeRun.project_id ?? null,run:activeRun.id})}/>}
+    <Stack direction={{xs:'column',sm:'row'}} spacing={2} sx={{alignItems:{sm:'center'},justifyContent:"space-between",mb:{xs:2,md:4}}}><Box sx={{minWidth:0}}>{currentProject&&<Button size="small" startIcon={<ArrowForward/>} onClick={() => navigate({page: 'projects'})} sx={{px:1,mb:.5}}>پروژه‌ها</Button>}<Typography variant="h4" sx={{mt:.5,mb:1,fontSize:{xs:'1.6rem',md:'2.125rem'},overflowWrap:'anywhere'}}>{nav===0?'نمای کلی':currentProject?configOf(currentProject).title:'پروژه‌ها و اجراها'}</Typography></Box><Stack direction="row" sx={{flexWrap:'wrap',gap:1,flexShrink:0}}>
+      <Button variant="outlined" size={compact?'small':'medium'} onClick={() => navigate({page: nav === 1 ? 'projects' : null, project: projectId, view: 'drive'})}>فایل‌های Google Drive</Button>
+      <Button variant="outlined" size={compact?'small':'medium'} disabled={active} onClick={() => openPostTest()}>آزمون لینک پست</Button>
+      <Button variant="contained" size={compact?'small':'medium'} startIcon={<Add/>} onClick={() => openProject()}>پروژه جدید</Button>
     </Stack></Stack>
     <Tabs value={nav} onChange={(_, value) => navigate({page: value === 1 ? 'projects' : null})} sx={{display: {md: 'none'}, mb: 2}}>
       <Tab label="نمای کلی" />
       <Tab label="پروژه‌ها و اجراها" />
     </Tabs>
-    {nav === 0 ? (
+    {nav === 0 ? (<Stack spacing={3}>
+      <AccountStatusCard status={account} />
       <ProjectOverview
         projects={projects}
         runs={runs}
         loading={loading}
-        statuses={labels}
         onOpen={id => navigate({page: 'projects', project: id})}
+        onCreate={() => openProject()}
       />
-    ) : <>
+    </Stack>) : <>
     {currentProject ? (
-      <Card sx={{p: 3, mb: 3}}>
+      <Stack spacing={3} sx={{mb: 3}}>
+      <Card sx={{p: {xs: 2, sm: 3}}}>
         <Stack spacing={2}>
-          <Button sx={{alignSelf: 'flex-start'}} onClick={() => navigate({page: 'projects'})}>بازگشت به پروژه‌ها</Button>
-          <Typography variant="h5">{configOf(currentProject).title}</Typography>
-          <Typography color="text.secondary">
-            {[...(configOf(currentProject).profiles ?? []), ...(configOf(currentProject).hashtags ?? []).map(tag => '#' + tag)].join('، ')}
+          <Typography variant="body2" color="text.secondary">
+            {configOf(currentProject).collection_scope === 'discover' ? 'تگ‌ها در دیسکاور جست‌وجو می‌شوند.' : 'پست‌های این پیج‌ها با تگ‌های زیر بررسی می‌شوند.'}
           </Typography>
+          <Stack direction="row" sx={{gap: 0.75, flexWrap: 'wrap'}}>
+            {(configOf(currentProject).profiles ?? []).map(name => <Chip key={'p' + name} size="small" label={ltr('@' + name)} />)}
+            {(configOf(currentProject).hashtags ?? []).map(tag => <Chip key={'t' + tag} size="small" variant="outlined" label={'#' + tag} />)}
+          </Stack>
           <Stack direction="row" sx={{gap: 1, flexWrap: 'wrap'}}>
-            <Button variant="contained" disabled={active || busy} onClick={() => void runProject(currentProject)}>شروع جمع‌آوری</Button>
+            <Button variant="contained" startIcon={<PlayArrow/>} disabled={active || busy || !!blocked} onClick={() => void runProject(currentProject)}>شروع جمع‌آوری</Button>
             <Button onClick={() => navigate({page: 'projects', project: currentProject.id, view: 'results'})}>داده‌های پروژه</Button>
             <Button variant={showAnalytics ? 'outlined' : 'text'} aria-pressed={showAnalytics}
               onClick={() => navigate({page: 'projects', project: currentProject.id, view: showAnalytics ? null : 'analytics'})}>تحلیل پروژه</Button>
@@ -456,21 +471,38 @@ export default function Home(){
             <Button onClick={() => openProject(currentProject)}>ویرایش پروژه</Button>
             <Button color="error" disabled={active || busy} onClick={() => setProjectToDelete(currentProject)}>حذف پروژه</Button>
           </Stack>
+          {(blocked || active) && <Typography variant="body2" color="text.secondary">{blocked ?? 'تا پایان اجرای فعلی، جمع‌آوری تازه و حذف پروژه ممکن نیست.'}</Typography>}
         </Stack>
       </Card>
+      <AccountStatusCard status={account} />
+      </Stack>
     ) : (
       <Card sx={{p: 3, mb: 3}}>
         <Typography variant="h6" sx={{mb: 2}}>پروژه‌ها</Typography>
-        {loading ? <CircularProgress size={24}/> : projects.length === 0 ? (
-          <Typography color="text.secondary">برای شروع، یک پروژه تعریف کنید.</Typography>
+        {loading ? <CircularProgress size={24} aria-label="در حال بارگیری پروژه‌ها"/> : projects.length === 0 ? (
+          <Stack spacing={1.5} sx={{alignItems: 'flex-start'}}>
+            <Typography color="text.secondary">هنوز پروژه‌ای ندارید. در پروژه، پیج‌ها و تگ‌هایی را که می‌خواهید پایش کنید تعریف می‌کنید.</Typography>
+            <Button variant="contained" startIcon={<Add/>} onClick={() => openProject()}>ساخت اولین پروژه</Button>
+          </Stack>
         ) : (
-          <Stack spacing={1}>
-            {projects.map(project => (
-              <Button key={project.id} variant="outlined" sx={{justifyContent: 'flex-start'}}
-                onClick={() => navigate({page: 'projects', project: project.id})}>
-                {configOf(project).title}
-              </Button>
-            ))}
+          <Stack divider={<Divider/>} sx={{border: '1px solid', borderColor: 'divider', borderRadius: 2}}>
+            {projects.map(project => {
+              const config = configOf(project) as Config & {};
+              const stats = project as Project & {posts_count?: number; comments_count?: number};
+              const latest = runs.find(run => run.project_id === project.id);
+              return (
+                <Box key={project.id} component="button" type="button" onClick={() => navigate({page: 'projects', project: project.id})}
+                  sx={{display: 'flex', alignItems: 'center', gap: 2, p: 2, border: 0, bgcolor: 'transparent', color: 'inherit', textAlign: 'start', cursor: 'pointer', font: 'inherit', borderRadius: 2, '&:hover': {bgcolor: 'action.hover'}, '&:focus-visible': {outline: '2px solid', outlineColor: 'primary.main'}}}>
+                  <Box sx={{flex: 1, minWidth: 0}}>
+                    <Typography sx={{fontWeight: 700, overflowWrap: 'anywhere'}}>{config.title}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {numbers(config.profiles?.length ?? 0)} پیج · {numbers(config.hashtags?.length ?? 0)} تگ · {numbers(stats.posts_count ?? 0)} پست · {numbers(stats.comments_count ?? 0)} کامنت
+                    </Typography>
+                  </Box>
+                  <StatusChip status={latest?.status} />
+                </Box>
+              );
+            })}
           </Stack>
         )}
       </Card>
@@ -479,17 +511,37 @@ export default function Home(){
     <Card>
       <Typography variant="h6" sx={{p: 3}}>{currentProject ? 'تاریخچهٔ پروژه' : 'آزمون‌ها و اجراهای مستقل'}</Typography>
       <Divider />
-      {visibleRuns.length === 0 ? <Typography sx={{p: 3}} color="text.secondary">هنوز اجرایی ثبت نشده است.</Typography> : (
+      {visibleRuns.length === 0 ? <Typography sx={{p: 3}} color="text.secondary">{currentProject ? 'این پروژه هنوز اجرا نشده است. با «شروع جمع‌آوری» اولین اجرا را آغاز کنید.' : 'هنوز آزمون یا اجرای مستقلی ثبت نشده است.'}</Typography> : compact ? (
+        <Stack divider={<Divider/>}>
+          {visibleRuns.map(run => (
+            <Stack key={run.id} spacing={1} sx={{p: 2}}>
+              <Stack direction="row" sx={{justifyContent: 'space-between', alignItems: 'center', gap: 1}}>
+                <Typography variant="body2" sx={{fontWeight: 700}}>{dateLabel(run.started_at)}</Typography>
+                <StatusChip status={run.status}/>
+              </Stack>
+              {!currentProject && <Typography variant="body2" color="text.secondary">{configOf(run).title ?? configOf(run).target ?? 'اجرای قبلی'}</Typography>}
+              <Typography variant="body2">{numbers(run.posts_count)} پست جدید · {numbers(run.comments_count)} کامنت جدید</Typography>
+              <Stack direction="row" sx={{gap: 1}}>
+                <Button size="small" variant="outlined" onClick={() => navigate({page: 'projects', project: projectId, run: run.id})}>مشاهده</Button>
+                {!currentProject && <>
+                  <Button size="small" disabled={active} onClick={() => openProject(run)}>اجرای دوباره</Button>
+                  <IconButton size="small" aria-label="پاک کردن اجرا و نتایج" color="error" disabled={active} onClick={() => setDeleting(run)}><DeleteOutlined /></IconButton>
+                </>}
+              </Stack>
+            </Stack>
+          ))}
+        </Stack>
+      ) : (
         <TableContainer>
           <Table>
             <TableHead><TableRow>
-              {['اجرا', 'زمان شروع', 'وضعیت', 'پست جدید', 'کامنت جدید', 'نتیجه'].map(label => <TableCell key={label}>{label}</TableCell>)}
+              {[...(currentProject ? [] : ['اجرا']), 'زمان شروع', 'وضعیت', 'پست جدید', 'کامنت جدید', 'نتیجه'].map(label => <TableCell key={label}>{label}</TableCell>)}
             </TableRow></TableHead>
             <TableBody>{visibleRuns.map(run => (
               <TableRow key={run.id} hover>
-                <TableCell>{configOf(run).title ?? configOf(run).target ?? 'اجرای قبلی'}</TableCell>
+                {!currentProject && <TableCell>{configOf(run).title ?? configOf(run).target ?? 'اجرای قبلی'}</TableCell>}
                 <TableCell>{dateLabel(run.started_at)}</TableCell>
-                <TableCell><Chip size="small" label={labels[run.status] ?? run.status}/></TableCell>
+                <TableCell><StatusChip status={run.status}/></TableCell>
                 <TableCell>{numbers(run.posts_count)}</TableCell>
                 <TableCell>{numbers(run.comments_count)}</TableCell>
                 <TableCell>
@@ -550,7 +602,7 @@ export default function Home(){
       </DialogActions>
     </Box>
   </Dialog>
-  <Dialog open={creating} onClose={closeCreate} fullWidth maxWidth="sm" dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6" sx={{fontWeight:700}}>{editingProject ? 'ویرایش پروژه' : 'پروژه جدید'}</Typography><IconButton aria-label="بستن" disabled={busy} onClick={closeCreate}><Close/></IconButton></Stack></DialogTitle><DialogContent><Stepper activeStep={step} alternativeLabel sx={{my:3}}>{['روش جمع‌آوری',collectionScope === 'discover' ? 'تگ‌ها' : 'پیج‌ها و تگ‌ها','تنظیمات اجرا'].map(x=><Step key={x}><StepLabel>{x}</StepLabel></Step>)}</Stepper>{formError&&<Alert severity="error" sx={{mb:2}}>{formError}</Alert>}
+  <Dialog open={creating} onClose={closeCreate} fullWidth maxWidth="sm" fullScreen={compact} dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6" sx={{fontWeight:700}}>{editingProject ? 'ویرایش پروژه' : 'پروژه جدید'}</Typography><IconButton aria-label="بستن" disabled={busy} onClick={closeCreate}><Close/></IconButton></Stack></DialogTitle><DialogContent><Stepper activeStep={step} alternativeLabel sx={{my:3}}>{['روش جمع‌آوری',collectionScope === 'discover' ? 'تگ‌ها' : 'پیج‌ها و تگ‌ها','تنظیمات اجرا'].map(x=><Step key={x}><StepLabel slots={{stepIcon: PersianStepIcon}}>{x}</StepLabel></Step>)}</Stepper>{formError&&<Alert severity="error" sx={{mb:2}}>{formError}</Alert>}
    <Stack spacing={2.5} sx={{pt:1}}>{step===0?<>
      <TextField select label="روش جمع‌آوری" value={collectionScope}
        onChange={event => setCollectionScope(event.target.value as CollectionScope)}
@@ -586,7 +638,7 @@ export default function Home(){
          onAdd={() => addChip('profile')}
          onRemove={item => setSavedProfiles(savedProfiles.filter(profile => profile !== item))}
        />}
-   </>:<><TextField label={collectionScope === 'discover' ? 'سقف پست برای هر تگ' : 'سقف بررسی پست برای هر پیج'} type="number" value={postLimit} onChange={e=>setPostLimit(Number(e.target.value))} slotProps={{htmlInput:{min:1,max:50}}}/><TextField label="سقف کامنت برای هر پست" type="number" value={commentLimit} onChange={e=>setCommentLimit(Number(e.target.value))} slotProps={{htmlInput:{min:1,max:500}}}/>
+   </>:<><TextField label={collectionScope === 'discover' ? 'سقف پست برای هر تگ' : 'سقف بررسی پست برای هر پیج'} type="number" value={postLimit || ''} onChange={e=>setPostLimit(Number(e.target.value))} error={postLimit<1||postLimit>50} helperText="بین ۱ تا ۵۰. عدد کمتر یعنی اجرای کوتاه‌تر و کم‌خطرتر." slotProps={{htmlInput:{min:1,max:50}}}/><TextField label="سقف کامنت برای هر پست" type="number" value={commentLimit || ''} onChange={e=>setCommentLimit(Number(e.target.value))} error={commentLimit<1||commentLimit>500} helperText="بین ۱ تا ۵۰۰." slotProps={{htmlInput:{min:1,max:500}}}/>
      <Box>
        <FormControlLabel
          control={<Switch checked={likers} onChange={event => setLikers(event.target.checked)} slotProps={{input: {'aria-describedby': 'likers-hint'}}} />}
@@ -614,9 +666,9 @@ export default function Home(){
          پس از اجرای موفق، خروجی‌ها و بکاپ را در پوشهٔ محلیِ تنظیم‌شده برای Google Drive کپی می‌کند.
        </Typography>
      </Box>
-     <Alert severity="info">{background ? 'اجرا در پس‌زمینه. ' : 'اجرا با پنجرهٔ مرورگر. '}{collectionScope === 'profile_tags' ? `${numbers(savedProfiles.length)} پیج و ` : 'دیسکاور، '}{numbers(hashtags.length)} تگ.</Alert></>}</Stack>
-  </DialogContent><DialogActions sx={{p:3}}><Button disabled={busy} onClick={()=>step?setStep(step-1):closeCreate()}>{step?'مرحله قبل':'انصراف'}</Button><Button variant="contained" disabled={busy||active} startIcon={busy?<CircularProgress size={16}/>:step===2?<PlayArrow/>:undefined} onClick={()=>step===2?void start():nextStep()}>{step === 2 ? 'ذخیرهٔ پروژه' : 'ادامه'}</Button></DialogActions></Dialog>
-  <Dialog open={!!selected || showProjectData} onClose={()=>navigate({page:'projects',project:projectId})} fullWidth maxWidth="lg" dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6">{resultTitle}</Typography><IconButton aria-label="بستن نتایج" onClick={()=>navigate({page:'projects',project:projectId})}><Close/></IconButton></Stack></DialogTitle><DialogContent>{selectedRun?.status==='running'&&<LinearProgress sx={{mb:2}}/>}{selectedRun?.status === 'awaiting_code' && (
+     <Alert severity="info">{background ? 'اجرا در پس‌زمینه. ' : 'اجرا با پنجرهٔ مرورگر. '}{collectionScope === 'profile_tags' ? `${numbers(savedProfiles.length)} پیج و ` : 'دیسکاور، '}{numbers(hashtags.length)} تگ. حداکثر {numbers((collectionScope === 'discover' ? hashtags.length : savedProfiles.length) * postLimit)} پست در هر اجرا بررسی می‌شود.{account ? ` امروز ${numbers(Math.max(0, account.posts_limit - account.posts_used))} پست از سقف روزانهٔ حساب باقی مانده است.` : ''}</Alert></>}</Stack>
+  </DialogContent><DialogActions sx={{p:3}}><Button disabled={busy} onClick={()=>step?setStep(step-1):closeCreate()}>{step?'مرحله قبل':'انصراف'}</Button><Button variant="contained" disabled={busy||(step===2&&(postLimit<1||postLimit>50||commentLimit<1||commentLimit>500))} startIcon={busy?<CircularProgress size={16}/>:undefined} onClick={()=>step===2?void start():nextStep()}>{step === 2 ? 'ذخیرهٔ پروژه' : 'ادامه'}</Button></DialogActions></Dialog>
+  <Dialog open={!!selected || showProjectData} onClose={()=>navigate({page:'projects',project:projectId})} fullWidth maxWidth="lg" fullScreen={compact} dir="rtl"><DialogTitle><Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between"}}><Typography component="span" variant="h6">{resultTitle}</Typography><IconButton aria-label="بستن نتایج" onClick={()=>navigate({page:'projects',project:projectId})}><Close/></IconButton></Stack></DialogTitle><DialogContent>{selectedRun&&activeStatuses.has(selectedRun.status)&&<RunProgress run={selectedRun}/>}{selectedRun?.status === 'awaiting_code' && (
     <VerificationPrompt key={selectedRun.id} runId={selectedRun.id} onAccepted={refresh} />
    )}{selectedRun?.status === 'awaiting_security' && (
     <BrowserLoginPrompt key={selectedRun.id} runId={selectedRun.id} onAccepted={refresh} />
@@ -639,7 +691,7 @@ export default function Home(){
     </Alert>
    )}<Stack direction="row" sx={{alignItems:"center",justifyContent:"space-between",flexWrap:"wrap"}}><Tabs value={tab} onChange={(_,value)=>{setTab(value);setPage(0)}}><Tab label={`پست‌ها (${numbers(posts.length)})`}/><Tab label={`کامنت‌ها (${numbers(comments.length)})`}/>{!showProjectData && <Tab label="گزارش اجرا"/>}</Tabs><Stack direction="row" spacing={1}>{['csv','xlsx'].map(ext=><Button key={ext} component="a" href={exportUrl + ext} startIcon={<DownloadOutlined/>} size="small">{ext.toUpperCase()}</Button>)}</Stack></Stack><Divider sx={{mb:2}}/>
    {tab<2&&<TextField label="جستجو در نتایج همین اجرا" value={query} onChange={e=>{setQuery(e.target.value);setPage(0)}} sx={{mb:2}} slotProps={{input:{startAdornment:<InputAdornment position="start"><Search/></InputAdornment>}}}/>}
-   {resultBusy?<Box sx={{p:5,textAlign:'center'}}><CircularProgress/></Box>:tab===2?<Box className="logs">{selectedRun?.logs||'هنوز پیامی ثبت نشده است.'}</Box> :tab===0?<Stack spacing={2}>{filteredPosts.slice(page*10,page*10+10).map(post => {
+   {resultBusy?<Box sx={{p:5,textAlign:'center'}}><CircularProgress/></Box>:tab===2?<Box className="logs" ref={(el:HTMLDivElement|null)=>{if(el&&selectedRun&&activeStatuses.has(selectedRun.status))el.scrollTop=el.scrollHeight}}>{selectedRun?.logs||'هنوز پیامی ثبت نشده است.'}</Box> :tab===0?<Stack spacing={2}>{filteredPosts.slice(page*10,page*10+10).map(post => {
      const expanded = expandedPost === post.post_url;
      const owner = post.owner || (post.source_type === 'profile' ? post.source : '');
      return <Paper variant="outlined" key={post.post_url} sx={{p: 2.5}}>
@@ -649,11 +701,11 @@ export default function Home(){
        </Stack>
        <Box component="button" type="button" aria-expanded={expanded} onClick={() => setExpandedPost(expanded ? null : post.post_url)} sx={{display: 'block', width: '100%', textAlign: 'start', border: 0, p: 0, bgcolor: 'transparent', color: 'inherit', cursor: 'pointer'}}>
          <Typography sx={{my: 2, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere'}}>{post.caption || 'متن پست ثبت نشده است.'}</Typography>
-         <Typography variant="caption" color="text.secondary" sx={{display: 'block', mb: 1}}>شناسهٔ پست {post.shortcode ?? '—'} · انتشار {dateLabel(post.published_at)} · جمع‌آوری {dateLabel(post.scraped_at)}</Typography>
+         <Typography variant="caption" color="text.secondary" sx={{display: 'block', mb: 1}}>شناسهٔ پست <bdi>{post.shortcode ?? '—'}</bdi> · انتشار {dateLabel(post.published_at)} · جمع‌آوری {dateLabel(post.scraped_at)}</Typography>
          <Stack direction="row" spacing={1} sx={{flexWrap: 'wrap', gap: 1}}>
            <Chip size="small" label={`${numbers(post.comments?.length || 0)} کامنت دریافتی · ${expanded ? 'بستن' : 'نمایش کامنت‌ها'}`}/>
-           <Chip size="small" variant="outlined" label={`${post.total_likes ?? '—'} لایک`}/>
-           {post.source && <Chip size="small" variant="outlined" label={(post.source_type === 'hashtag' ? '#' : '@') + post.source}/>}
+           <Chip size="small" variant="outlined" label={`${likesLabel(post.total_likes)} لایک`}/>
+           {post.source && <Chip size="small" variant="outlined" label={post.source_type === 'hashtag' ? '#' + post.source : ltr('@' + post.source)}/>}
          </Stack>
        </Box>
        {expanded && <Box sx={{mt: 2}}><Divider sx={{mb: 2}}/>
@@ -664,7 +716,7 @@ export default function Home(){
          </Box>)}</Stack>}
        </Box>}
      </Paper>;
-   })}{!filteredPosts.length&&<Alert severity="info">پستی برای نمایش وجود ندارد.</Alert>}</Stack>:<TableContainer><Table size="small"><TableHead><TableRow><TableCell>کاربر</TableCell><TableCell>متن کامنت</TableCell><TableCell>زمان انتشار</TableCell><TableCell>پست</TableCell></TableRow></TableHead><TableBody>{filteredComments.slice(page*10,page*10+10).map((c,i)=><TableRow key={i}><TableCell dir="ltr">{c.username}</TableCell><TableCell sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{c.text}</TableCell><TableCell>{dateLabel(c.time)}</TableCell><TableCell><Button component="a" href={c.post_url} target="_blank" rel="noopener noreferrer" size="small">مشاهده</Button></TableCell></TableRow>)}</TableBody></Table>{!filteredComments.length&&<Alert severity="info">کامنتی برای نمایش وجود ندارد.</Alert>}</TableContainer>}
+   })}{!filteredPosts.length&&<Alert severity="info">{query ? 'پستی با این عبارت پیدا نشد.' : selectedRun && activeStatuses.has(selectedRun.status) ? 'هنوز پستی ذخیره نشده است. پست‌ها همزمان با جمع‌آوری اینجا اضافه می‌شوند.' : 'پستی برای نمایش وجود ندارد.'}</Alert>}</Stack>:<TableContainer><Table size="small"><TableHead><TableRow><TableCell>کاربر</TableCell><TableCell>متن کامنت</TableCell><TableCell>زمان انتشار</TableCell><TableCell>پست</TableCell></TableRow></TableHead><TableBody>{filteredComments.slice(page*10,page*10+10).map((c,i)=><TableRow key={i}><TableCell dir="ltr">{c.username}</TableCell><TableCell sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{c.text}</TableCell><TableCell>{dateLabel(c.time)}</TableCell><TableCell><Button component="a" href={c.post_url} target="_blank" rel="noopener noreferrer" size="small">مشاهده</Button></TableCell></TableRow>)}</TableBody></Table>{!filteredComments.length&&<Alert severity="info">کامنتی برای نمایش وجود ندارد.</Alert>}</TableContainer>}
    {tab<2&&<TablePagination component="div" count={tab===0?filteredPosts.length:filteredComments.length} rowsPerPage={10} rowsPerPageOptions={[10]} page={page} onPageChange={(_,value)=>setPage(value)} labelDisplayedRows={({from,to,count})=>`${numbers(from)} تا ${numbers(to)} از ${numbers(count)}`} getItemAriaLabel={type=>type==='next'?'صفحه بعد':'صفحه قبل'}/>}
   </DialogContent></Dialog>
   <Dialog open={!!projectToDelete} onClose={() => !busy && setProjectToDelete(null)} dir="rtl">

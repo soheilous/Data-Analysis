@@ -76,6 +76,19 @@ class ThrottleTests(StateDirTestCase):
         self.assertIn('متوقف است', str(caught.exception))
         self.throttle('direct-b').check()
 
+    def test_account_status_reports_usage_and_cooldown_without_changing_it(self):
+        status = safety.account_status('direct-a', safety.Limits(daily_posts=5))
+        self.assertEqual((status['posts_used'], status['posts_limit'], status['cooldown_until']), (0, 5, None))
+        throttle = self.throttle()
+        throttle.before_request()
+        throttle.before_post()
+        throttle.restrict('rate_limit')
+        status = safety.account_status('direct-a', safety.Limits(daily_posts=5))
+        self.assertEqual((status['requests_used'], status['posts_used']), (1, 1))
+        self.assertIsNotNone(status['cooldown_until'])
+        self.assertIn('۴۲۹', status['cooldown_reason'])
+        self.assertIsNone(safety.account_status('direct-b')['cooldown_until'])
+
     def test_account_key_hides_username(self):
         key = safety.account_key('direct', 'Example.User')
         self.assertNotIn('example', key.casefold())

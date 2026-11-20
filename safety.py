@@ -236,6 +236,27 @@ class Throttle:
         )
 
 
+def account_status(key, limits=None):
+    """Today's usage and any cooldown for one account, without changing state."""
+    limits = limits or Limits.from_env()
+    with _state_lock:
+        entry = _load(state_dir() / 'account-limits.json').get(key, {})
+    today = entry.get('day') == _today()
+    status = {
+        'requests_used': entry.get('requests', 0) if today else 0,
+        'requests_limit': limits.daily_requests,
+        'posts_used': entry.get('posts', 0) if today else 0,
+        'posts_limit': limits.daily_posts,
+        'cooldown_until': None,
+        'cooldown_reason': None,
+    }
+    until = entry.get('cooldown_until')
+    if until and datetime.fromisoformat(until) > _now():
+        status['cooldown_until'] = until
+        status['cooldown_reason'] = COOLDOWN_REASONS.get(entry.get('cooldown_kind'), 'اینستاگرام محدودیت اعلام کرد')
+    return status
+
+
 def classify_restriction(error):
     """Map an upstream error (any library) to a cooldown kind, or None."""
     name = type(error).__name__
